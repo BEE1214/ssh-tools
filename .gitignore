@@ -1,0 +1,17 @@
+# Binary
+/bin/
+/sshm
+*.exe
+
+# Go
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
