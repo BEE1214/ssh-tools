@@ -33,3 +33,23 @@ func (a *App) ListGroups() (map[string][]domain.Host, error) {
 	}
 	return domain.GroupHosts(cfg.Hosts), nil
 }
+
+// HostNamesForCompletion returns host names matching the query, for shell
+// completion. Uses fuzzy matching when query is non-empty, alphabetical
+// when empty. Excludes wildcard hosts.
+func (a *App) HostNamesForCompletion(query string) ([]string, error) {
+	cfg, err := a.load()
+	if err != nil {
+		return nil, err
+	}
+
+	// Exclude wildcard hosts from completion.
+	var hosts []domain.Host
+	for _, h := range cfg.Hosts {
+		if !h.IsWildcard() {
+			hosts = append(hosts, h)
+		}
+	}
+
+	return domain.FuzzyMatch(hosts, query), nil
+}

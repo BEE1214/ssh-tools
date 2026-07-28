@@ -14,9 +14,10 @@ import (
 //   - Subcommands: list, search, add, edit, dump, validate, groups, init.
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "sshm",
-		Short: "SSH config manager",
-		Long:  "Manage ~/.ssh/config hosts with a TUI and CLI.",
+		Use:               "sshm",
+		Short:             "SSH config manager",
+		Long:              "Manage ~/.ssh/config hosts with a TUI and CLI.",
+		ValidArgsFunction: hostCompletion,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// No args -> TUI (not yet implemented).
 			if len(args) == 0 {

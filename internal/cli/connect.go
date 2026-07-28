@@ -6,9 +6,10 @@ import (
 
 func newConnectCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "connect <hostname>",
-		Short: "Connect to a host via ssh",
-		Args:  cobra.ExactArgs(1),
+		Use:               "connect <hostname>",
+		Short:             "Connect to a host via ssh",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: hostCompletion,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runConnect(cmd, args[0])
 		},

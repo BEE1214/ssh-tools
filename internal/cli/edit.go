@@ -9,9 +9,10 @@ import (
 
 func newEditCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "edit <hostname>",
-		Short: "Edit a host's options (via flags)",
-		Args:  cobra.ExactArgs(1),
+		Use:               "edit <hostname>",
+		Short:             "Edit a host's options (via flags)",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: hostCompletion,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 
@@ -53,9 +54,10 @@ func newEditCmd() *cobra.Command {
 
 func newDumpCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "dump <hostname>",
-		Short: "Show effective config for a host (like ssh -G)",
-		Args:  cobra.ExactArgs(1),
+		Use:               "dump <hostname>",
+		Short:             "Show effective config for a host (like ssh -G)",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: hostCompletion,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a := newApp()
 			h, err := a.Dump(args[0])
