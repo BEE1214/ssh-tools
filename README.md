@@ -2,6 +2,10 @@
 
 TUI and CLI tool for managing `~/.ssh/config`. Reads and writes your SSH config directly — no database, no shadow state, no separate format.
 
+> **Warning:** This project is AI-generated. The code, tests, and documentation
+> were produced with the assistance of AI tools. Review before relying on it
+> for anything important.
+
 ## Status
 
 Phase 1 complete: CLI working, TUI pending.
@@ -138,4 +142,6 @@ go build -o bin/sshm ./cmd/sshm/
 
 ## License
 
-Personal use.
+GPL-2.0-only. See [LICENSE](LICENSE).
+
+Same license as the Linux kernel.
