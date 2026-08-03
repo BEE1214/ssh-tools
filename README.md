@@ -27,6 +27,14 @@ When your `~/.ssh/config` has 50+ hosts across multiple projects, sites, and Dev
 ## Install
 
 ```bash
+./install.sh
+```
+
+Builds the project, installs the binary to `$HOME/.local/bin`, and optionally installs shell completion for bash/zsh/fish to `/usr/share/sshm/`.
+
+Or build manually:
+
+```bash
 go build -o bin/sshm ./cmd/sshm/
 ```
 
@@ -40,7 +48,7 @@ sshm <hostname>              # connect: exec ssh <hostname>
 sshm connect <hostname>      # same, explicit
 sshm list                    # list all hosts, grouped
 sshm list --flat             # one host per line (for fzf)
-sshm list --group host      # filter by group
+sshm list --group mygroup    # filter by group
 sshm search <pattern>        # search host names and hostnames
 sshm add --name foo --hostname 10.0.0.1 --user root --port 22 --identity ~/.ssh/id_ed25519
 sshm edit <hostname> --user root --port 20008
@@ -81,10 +89,10 @@ source <(sshm completion bash)   # or zsh, fish
 Hosts are auto-grouped by the first segment before a dash:
 
 ```
-host-acq-dev   -> host
-zf-poland3-mgmt -> zf
-karel-pve-proxy -> karel
-emil            -> (ungrouped)
+prod-web-01     -> prod
+prod-db-02      -> prod
+staging-api-01  -> staging
+myhost          -> (ungrouped)
 ```
 
 Override with a `# group: <name>` comment above the Host line.
