@@ -21,6 +21,9 @@ func newEditCmd() *cobra.Command {
 			for _, f := range flags {
 				if cmd.Flags().Changed(f) {
 					val, _ := cmd.Flags().GetString(f)
+					if f == "identity" {
+						f = "identityfile"
+					}
 					changes[f] = val
 				}
 			}
