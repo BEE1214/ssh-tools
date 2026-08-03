@@ -11,12 +11,13 @@ import (
 // NewRootCmd creates the root cobra command.
 //   - No args: launches TUI (future).
 //   - One arg that matches a host name: connects via ssh.
-//   - Subcommands: list, search, add, edit, copy, dump, validate, groups, init.
+//   - Subcommands: list, search, add, edit, copy, dump, validate, groups, init, version.
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:               "sshm",
 		Short:             "SSH config manager",
 		Long:              "Manage ~/.ssh/config hosts with a TUI and CLI.",
+		Version:           version,
 		ValidArgsFunction: hostCompletion,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// No args -> TUI (not yet implemented).
@@ -43,6 +44,7 @@ func NewRootCmd() *cobra.Command {
 		newValidateCmd(),
 		newGroupsCmd(),
 		newInitCmd(),
+		newVersionCmd(),
 	)
 
 	return root

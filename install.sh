@@ -46,8 +46,12 @@ check_install_dir() {
 build() {
     info "Building $BINARY_NAME..."
     cd "$SCRIPT_DIR"
-    go build -o "$BINARY_PATH" ./cmd/sshm/
-    ok "Built $BINARY_PATH"
+    local ver="dev"
+    if [[ -f ".version" ]]; then
+        ver=$(cat .version)
+    fi
+    go build -ldflags "-X github.com/adamdvorsky/ssh-tools/internal/cli.version=$ver" -o "$BINARY_PATH" ./cmd/sshm/
+    ok "Built $BINARY_PATH (v$ver)"
 }
 
 # --- Completion ---
