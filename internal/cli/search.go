@@ -60,7 +60,7 @@ func newAddCmd() *cobra.Command {
 				HostName:     hostname,
 				User:         user,
 				Port:         port,
-				IdentityFile: identity,
+				IdentityFile: defaultIdentity(identity),
 				ProxyJump:    proxyJump,
 			}
 
@@ -77,9 +77,18 @@ func newAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&hostname, "hostname", "", "hostname or IP")
 	cmd.Flags().StringVar(&user, "user", "", "ssh user")
 	cmd.Flags().StringVar(&port, "port", "", "ssh port (default 22)")
-	cmd.Flags().StringVar(&identity, "identity", "", "identity file path")
+	cmd.Flags().StringVar(&identity, "identity", "", "identity file path (defaults to "+domain.DefaultIdentityFile+")")
 	cmd.Flags().StringVar(&proxyJump, "proxyjump", "", "proxy jump host")
 	cmd.MarkFlagRequired("name")
 
 	return cmd
+}
+
+// defaultIdentity returns the given identity if non-empty, otherwise the
+// default identity key.
+func defaultIdentity(id string) string {
+	if id != "" {
+		return id
+	}
+	return domain.DefaultIdentityFile
 }

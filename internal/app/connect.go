@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 
 	"github.com/adamdvorsky/ssh-tools/internal/domain"
@@ -22,6 +23,10 @@ func (a *App) Connect(name string) error {
 
 	idx := findHostIndex(cfg.Hosts, name)
 	if idx == -1 {
+		// Not in config — check for user@hostname pattern for ad-hoc connect.
+		if strings.Contains(name, "@") {
+			return a.connectAdHoc(name)
+		}
 		// Try fuzzy suggestion
 		suggestion := suggestHost(cfg.Hosts, name)
 		if suggestion != "" {
@@ -39,6 +44,24 @@ func (a *App) Connect(name string) error {
 	env := os.Environ()
 
 	// syscall.Exec replaces the process. This never returns on success.
+	if err := syscall.Exec(binary, argv, env); err != nil {
+		return fmt.Errorf("exec ssh: %w", err)
+	}
+
+	return nil // unreachable
+}
+
+// connectAdHoc connects to a user@hostname not in the config file,
+// using the default identity key.
+func (a *App) connectAdHoc(target string) error {
+	binary, err := exec.LookPath("ssh")
+	if err != nil {
+		return fmt.Errorf("ssh not found in PATH: %w", err)
+	}
+
+	argv := []string{"ssh", "-i", domain.DefaultIdentityFile, target}
+	env := os.Environ()
+
 	if err := syscall.Exec(binary, argv, env); err != nil {
 		return fmt.Errorf("exec ssh: %w", err)
 	}

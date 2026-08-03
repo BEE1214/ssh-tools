@@ -61,6 +61,10 @@ type Host struct {
 	LineEnd   int
 }
 
+// DefaultIdentityFile is the default SSH key used for ad-hoc connections
+// and when adding a host without an explicit --identity flag.
+const DefaultIdentityFile = "~/.ssh/id_ed25519"
+
 // HasHostName returns true if the Host has an explicit HostName set.
 func (h Host) HasHostName() bool { return h.HostName != "" }
 
