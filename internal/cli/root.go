@@ -11,7 +11,7 @@ import (
 // NewRootCmd creates the root cobra command.
 //   - No args: launches TUI (future).
 //   - One arg that matches a host name: connects via ssh.
-//   - Subcommands: list, search, add, edit, dump, validate, groups, init.
+//   - Subcommands: list, search, add, edit, copy, dump, validate, groups, init.
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:               "sshm",
@@ -35,6 +35,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(
 		newListCmd(),
 		newConnectCmd(),
+		newCopyCmd(),
 		newSearchCmd(),
 		newAddCmd(),
 		newEditCmd(),
