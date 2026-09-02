@@ -179,9 +179,10 @@ func ParseCertInfo(path, output string) (Certificate, error) {
 
 // parseCertTime parses an ssh-keygen date string.
 // ssh-keygen outputs dates in formats like:
-//   "2024-01-01T00:00:00"
-//   "2024-01-01T00:00:00+0000"
-//   "2024-01-01T00:00:00Z"
+//
+//	"2024-01-01T00:00:00"
+//	"2024-01-01T00:00:00+0000"
+//	"2024-01-01T00:00:00Z"
 func parseCertTime(s string) time.Time {
 	s = strings.TrimSpace(s)
 	layouts := []string{

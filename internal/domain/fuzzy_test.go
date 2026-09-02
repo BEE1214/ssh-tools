@@ -71,7 +71,7 @@ func TestFuzzyMatch_CaseInsensitive(t *testing.T) {
 func TestFuzzyMatch_PrefixBeforeSubsequence(t *testing.T) {
 	hosts := []Host{
 		{Name: "zfer-prod"},  // fuzzy match "zfer" via subsequence
-		{Name: "zf-poland3"},  // prefix match "zf"
+		{Name: "zf-poland3"}, // prefix match "zf"
 	}
 	result := FuzzyMatch(hosts, "zf")
 	// zf-poland3 is a prefix match, should come first

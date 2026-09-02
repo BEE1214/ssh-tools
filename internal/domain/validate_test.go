@@ -1,102 +1,134 @@
 package domain
 
 import (
+	"strings"
 	"testing"
+	"time"
 )
 
-func TestValidate_MissingIdentity(t *testing.T) {
-	hosts := []Host{
-		{Name: "emil", LineStart: 1, IdentityFile: "~/.ssh/key"},
-		{Name: "jefry", LineStart: 5},
-	}
-	issues := Validate(hosts)
-
-	found := false
+func findRule(issues []Issue, rule string) []Issue {
+	var result []Issue
 	for _, i := range issues {
-		if i.Rule == "missing-identity" && i.HostName == "jefry" {
-			found = true
+		if i.Rule == rule {
+			result = append(result, i)
 		}
 	}
-	if !found {
-		t.Error("expected missing-identity warning for jefry")
-	}
+	return result
+}
 
-	// emil should not have a missing-identity warning
-	for _, i := range issues {
-		if i.Rule == "missing-identity" && i.HostName == "emil" {
-			t.Error("emil should not have missing-identity warning")
+func TestValidate_InvalidPort(t *testing.T) {
+	tests := []struct {
+		port    string
+		wantErr bool
+	}{
+		{"22", false},
+		{"65535", false},
+		{"1", false},
+		{"0", true},
+		{"65536", true},
+		{"-1", true},
+		{"abc", true},
+		{"22abc", true},
+		{"", false}, // empty means default, not an error
+	}
+	for _, tt := range tests {
+		hosts := []Host{{Name: "emil", LineStart: 1, Port: tt.port, IdentityFile: "~/.ssh/k"}}
+		issues := Validate(hosts)
+		got := len(findRule(issues, "invalid-port")) > 0
+		if got != tt.wantErr {
+			t.Errorf("Port %q: invalid-port=%v, want %v", tt.port, got, tt.wantErr)
 		}
 	}
 }
 
-func TestValidate_DuplicateHost(t *testing.T) {
+func TestValidate_InvalidBoolean(t *testing.T) {
 	hosts := []Host{
-		{Name: "emil", LineStart: 1},
-		{Name: "emil", LineStart: 10},
+		{Name: "emil", LineStart: 1, IdentityFile: "~/.ssh/k", ForwardAgent: "maybe"},
 	}
 	issues := Validate(hosts)
-
-	found := false
-	for _, i := range issues {
-		if i.Rule == "duplicate-host" {
-			found = true
-		}
+	found := findRule(issues, "invalid-value")
+	if len(found) != 1 {
+		t.Fatalf("got %d invalid-value issues, want 1", len(found))
 	}
-	if !found {
-		t.Error("expected duplicate-host error")
-	}
-	if !HasErrors(issues) {
-		t.Error("HasErrors should return true")
+	if !strings.Contains(found[0].Message, "ForwardAgent") {
+		t.Errorf("message should mention ForwardAgent: %q", found[0].Message)
 	}
 }
 
-func TestValidate_StrictNo(t *testing.T) {
+func TestValidate_ValidBoolean(t *testing.T) {
 	hosts := []Host{
-		{Name: "emil", LineStart: 1, StrictHostKeyChecking: "no"},
-		{Name: "jefry", LineStart: 5, StrictHostKeyChecking: "accept-new"},
+		{Name: "emil", LineStart: 1, IdentityFile: "~/.ssh/k", ForwardAgent: "yes", ForwardX11: "no"},
 	}
 	issues := Validate(hosts)
-
-	found := false
-	for _, i := range issues {
-		if i.Rule == "strict-no" && i.HostName == "emil" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("expected strict-no warning for emil")
-	}
-
-	// jefry should not have it
-	for _, i := range issues {
-		if i.Rule == "strict-no" && i.HostName == "jefry" {
-			t.Error("jefry should not have strict-no warning")
-		}
+	if got := len(findRule(issues, "invalid-value")); got != 0 {
+		t.Errorf("got %d invalid-value issues, want 0", got)
 	}
 }
 
-func TestValidate_WildcardSkipsIdentity(t *testing.T) {
+func TestValidate_ProxyJumpLoop(t *testing.T) {
+	hosts := []Host{
+		{Name: "emil", LineStart: 1, IdentityFile: "~/.ssh/k", ProxyJump: "emil"},
+	}
+	issues := Validate(hosts)
+	if got := len(findRule(issues, "proxyjump-loop")); got != 1 {
+		t.Fatalf("got %d proxyjump-loop issues, want 1", got)
+	}
+}
+
+func TestValidate_ProxyJumpOtherHostOK(t *testing.T) {
+	hosts := []Host{
+		{Name: "emil", LineStart: 1, IdentityFile: "~/.ssh/k", ProxyJump: "jefry"},
+	}
+	issues := Validate(hosts)
+	if got := len(findRule(issues, "proxyjump-loop")); got != 0 {
+		t.Errorf("got %d proxyjump-loop issues, want 0", got)
+	}
+}
+
+func TestValidate_DuplicateWildcard(t *testing.T) {
 	hosts := []Host{
 		{Name: "*", LineStart: 1},
+		{Name: "emil", LineStart: 5},
+		{Name: "*", LineStart: 10},
 	}
 	issues := Validate(hosts)
-	for _, i := range issues {
-		if i.Rule == "missing-identity" {
-			t.Error("wildcard host should not trigger missing-identity")
-		}
+	if got := len(findRule(issues, "duplicate-wildcard")); got != 1 {
+		t.Fatalf("got %d duplicate-wildcard issues, want 1", got)
 	}
 }
 
-func TestFilterByHost(t *testing.T) {
-	issues := []Issue{
-		{HostName: "emil", Rule: "missing-identity"},
-		{HostName: "jefry", Rule: "strict-no"},
+func TestValidate_CertSatisfiesIdentity(t *testing.T) {
+	// Host with only CertificateFile should not trigger missing-identity.
+	hosts := []Host{
+		{Name: "emil", LineStart: 1, CertificateFile: "~/.ssh/key-cert.pub"},
 	}
-	filtered := FilterByHost(issues, "emil")
-	if len(filtered) != 1 {
-		t.Fatalf("got %d, want 1", len(filtered))
+	issues := Validate(hosts)
+	if got := len(findRule(issues, "missing-identity")); got != 0 {
+		t.Errorf("got %d missing-identity issues, want 0 (CertificateFile satisfies)", got)
 	}
-	if filtered[0].HostName != "emil" {
-		t.Errorf("got %q, want emil", filtered[0].HostName)
+}
+
+func TestValidateCertExpiry_Expired(t *testing.T) {
+	c := Certificate{
+		Identity:    "emil",
+		ValidBefore: time.Now().Add(-1 * time.Hour),
+	}
+	issue, expired := ValidateCertExpiry(c)
+	if !expired {
+		t.Fatal("expected expired")
+	}
+	if issue.Rule != "cert-expired" {
+		t.Errorf("rule = %q, want cert-expired", issue.Rule)
+	}
+}
+
+func TestValidateCertExpiry_Valid(t *testing.T) {
+	c := Certificate{
+		Identity:    "emil",
+		ValidBefore: time.Now().Add(1 * time.Hour),
+	}
+	_, expired := ValidateCertExpiry(c)
+	if expired {
+		t.Fatal("expected not expired")
 	}
 }

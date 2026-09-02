@@ -35,11 +35,11 @@ type Host struct {
 	LogLevel              string
 
 	// Algorithm options.
-	HostKeyAlgorithms    string
-	KexAlgorithms        string
+	HostKeyAlgorithms        string
+	KexAlgorithms            string
 	PubkeyAcceptedAlgorithms string
-	Ciphers              string
-	MACs                 string
+	Ciphers                  string
+	MACs                     string
 
 	// Extra holds any SSH option not modeled above.
 	// Key is the canonical (canonical-cased) option name.

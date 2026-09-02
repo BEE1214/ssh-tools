@@ -38,19 +38,19 @@ func (a *App) InitDefaults() error {
 // keepalive defaults.
 func defaultHost() domain.Host {
 	return domain.Host{
-		Name:                     "*",
-		Source:                   domain.SourceManual,
-		StrictHostKeyChecking:    "accept-new",
+		Name:                  "*",
+		Source:                domain.SourceManual,
+		StrictHostKeyChecking: "accept-new",
 		Extra: map[string]string{
 			"ServerAliveInterval": "60",
-			"ServerAliveCountMax":  "3",
+			"ServerAliveCountMax": "3",
 			"IdentitiesOnly":      "yes",
 			"HashKnownHosts":      "yes",
 		},
-		KexAlgorithms:           "mlkem768x25519-sha256@openssh.com,sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org",
-		HostKeyAlgorithms:        "ssh-ed25519,ssh-ed25519-cert-v01@openssh.com,rsa-sha2-512,rsa-sha2-256",
-		Ciphers:                  "chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com",
-		MACs:                     "hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com",
+		KexAlgorithms:     "mlkem768x25519-sha256@openssh.com,sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org",
+		HostKeyAlgorithms: "ssh-ed25519,ssh-ed25519-cert-v01@openssh.com,rsa-sha2-512,rsa-sha2-256",
+		Ciphers:           "chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com",
+		MACs:              "hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com",
 	}
 }
 

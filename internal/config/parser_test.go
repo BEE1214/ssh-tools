@@ -222,3 +222,51 @@ func TestIsHostLine(t *testing.T) {
 		})
 	}
 }
+func TestParse_DuplicateKey(t *testing.T) {
+	raw := []byte("Host emil\n  HostName 10.0.0.1\n  HostName 10.0.0.2\n")
+	cfg, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Parse succeeds but records the dup-key issue.
+	if len(cfg.Issues) != 1 {
+		t.Fatalf("got %d parse issues, want 1", len(cfg.Issues))
+	}
+	if cfg.Issues[0].Rule != "dup-key" {
+		t.Errorf("rule = %q, want dup-key", cfg.Issues[0].Rule)
+	}
+	if cfg.Issues[0].Line != 3 {
+		t.Errorf("line = %d, want 3", cfg.Issues[0].Line)
+	}
+	// Parser is last-wins; ssh is first-wins. Either way host has a value.
+	if cfg.Hosts[0].HostName == "" {
+		t.Error("HostName should still be set")
+	}
+}
+
+func TestParse_MalformedLine(t *testing.T) {
+	raw := []byte("Host emil\n  HostName\n")
+	cfg, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cfg.Issues) != 1 {
+		t.Fatalf("got %d parse issues, want 1", len(cfg.Issues))
+	}
+	if cfg.Issues[0].Rule != "malformed-line" {
+		t.Errorf("rule = %q, want malformed-line", cfg.Issues[0].Rule)
+	}
+}
+
+func TestParse_CleanFileNoIssues(t *testing.T) {
+	raw := []byte("Host emil\n  HostName 10.0.0.1\n  User adam\n")
+	cfg, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Issues) != 0 {
+		t.Errorf("got %d parse issues, want 0", len(cfg.Issues))
+	}
+}

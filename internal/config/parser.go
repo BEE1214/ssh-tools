@@ -8,11 +8,21 @@ import (
 	"github.com/adamdvorsky/ssh-tools/internal/domain"
 )
 
+// ParseIssue is a problem found while parsing the config file.
+// It is non-fatal: parsing continues and the issue is reported by
+// `sshm validate`.
+type ParseIssue struct {
+	Line    int    // 1-indexed line number
+	Rule    string // machine-readable rule name (e.g. "dup-key")
+	Message string // human-readable description
+}
+
 // ConfigFile is the parsed representation of the entire SSH config file.
 type ConfigFile struct {
 	Hosts    []domain.Host
 	Comments []CommentBlock // standalone comments/blank lines preserved between hosts
 	Raw      []byte         // original file bytes
+	Issues   []ParseIssue   // non-fatal problems found during parsing
 }
 
 // CommentBlock preserves comments and blank lines between host blocks.
@@ -29,6 +39,9 @@ type CommentBlock struct {
 //   - IN_HOST: accumulate key-value pairs into current Host.
 //
 // It preserves comments, blank lines, and detects DevPod blocks.
+// Malformed lines and duplicate keys are recorded in cfg.Issues instead of
+// failing the parse — the file may have problems but the user still needs
+// to connect.
 func Parse(raw []byte) (*ConfigFile, error) {
 	cfg := &ConfigFile{Raw: raw}
 
@@ -97,8 +110,8 @@ func Parse(raw []byte) (*ConfigFile, error) {
 			// Simpler: everything after "Host " (case-insensitive)
 			name = strings.TrimSpace(trimmed[5:])
 			currentHost = &domain.Host{
-				Name:   name,
-				Group:  domain.GroupFor(name),
+				Name:  name,
+				Group: domain.GroupFor(name),
 			}
 			if pendingDevPod != "" {
 				currentHost.Source = domain.SourceDevPod
@@ -149,9 +162,22 @@ func Parse(raw []byte) (*ConfigFile, error) {
 
 		// Key-value pair inside a host block
 		if err := parseKeyValue(currentHost, trimmed); err != nil {
-			// Non-fatal: collect but continue.
-			// Could log warning here in future.
-			_ = err
+			// Non-fatal: record the issue and continue.
+			rule := "malformed-line"
+			msg := fmt.Sprintf("malformed line %q — expected 'Key Value'", trimmed)
+			if strings.Contains(err.Error(), "duplicate key") {
+				rule = "dup-key"
+				// err is "duplicate key HostName: HostName 10.0.0.6" —
+				// extract the option name for a clear message.
+				parts := strings.SplitN(err.Error(), ": ", 2)
+				option := strings.TrimPrefix(parts[0], "duplicate key ")
+				msg = fmt.Sprintf("%s set twice in host %q — ssh uses the first value", option, currentHost.Name)
+			}
+			cfg.Issues = append(cfg.Issues, ParseIssue{
+				Line:    lineNum,
+				Rule:    rule,
+				Message: msg,
+			})
 		}
 	}
 
@@ -198,6 +224,13 @@ func parseKeyValue(h *domain.Host, line string) error {
 	value := strings.TrimSpace(line[idx+1:])
 	canonicalKey := canonicalKey(key)
 
+	// Duplicate key within the same block: ssh uses first-wins, our
+	// parser overwrites (last-wins). Either way it's almost certainly
+	// a mistake — flag it.
+	if keyExists(h, canonicalKey) {
+		return fmt.Errorf("duplicate key %s: %q", canonicalKey, line)
+	}
+
 	switch canonicalKey {
 	case "HostName":
 		h.HostName = value
@@ -243,6 +276,48 @@ func parseKeyValue(h *domain.Host, line string) error {
 	}
 
 	return nil
+}
+
+// keyExists reports whether the canonical key is already set on the host
+// (either as a first-class field or in Extra).
+func keyExists(h *domain.Host, canonicalKey string) bool {
+	switch canonicalKey {
+	case "HostName":
+		return h.HostName != ""
+	case "User":
+		return h.User != ""
+	case "Port":
+		return h.Port != ""
+	case "IdentityFile":
+		return h.IdentityFile != ""
+	case "CertificateFile":
+		return h.CertificateFile != ""
+	case "ProxyJump":
+		return h.ProxyJump != ""
+	case "ProxyCommand":
+		return h.ProxyCommand != ""
+	case "ForwardAgent":
+		return h.ForwardAgent != ""
+	case "ForwardX11":
+		return h.ForwardX11 != ""
+	case "StrictHostKeyChecking":
+		return h.StrictHostKeyChecking != ""
+	case "LogLevel":
+		return h.LogLevel != ""
+	case "HostKeyAlgorithms":
+		return h.HostKeyAlgorithms != ""
+	case "KexAlgorithms":
+		return h.KexAlgorithms != ""
+	case "PubkeyAcceptedAlgorithms":
+		return h.PubkeyAcceptedAlgorithms != ""
+	case "Ciphers":
+		return h.Ciphers != ""
+	case "MACs":
+		return h.MACs != ""
+	default:
+		_, ok := h.Extra[canonicalKey]
+		return ok
+	}
 }
 
 // canonicalKey normalizes an SSH config key to canonical form.

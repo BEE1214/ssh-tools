@@ -9,12 +9,31 @@ import (
 )
 
 func newValidateCmd() *cobra.Command {
+	var strict bool
+	var skipFiles bool
+
 	cmd := &cobra.Command{
 		Use:   "validate",
-		Short: "Check config for issues",
+		Short: "Lint config: integrity, file references, permissions, cert expiry",
+		Long: `Check the SSH config for issues:
+
+  error    — config or ssh would misbehave (duplicate host, bad port,
+             unsafe key permissions, missing key file)
+  warning  — works, but risky or suspicious (StrictHostKeyChecking no,
+             missing identity, expired certificate)
+  info     — cosmetic (mixed-case keys)
+
+Exit codes: 0 clean, 1 errors found (or warnings with --strict).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a := newApp()
-			issues, err := a.Validate()
+
+			var issues []domain.Issue
+			var err error
+			if skipFiles {
+				issues, err = a.Validate()
+			} else {
+				issues, err = a.Lint()
+			}
 			if err != nil {
 				return err
 			}
@@ -24,6 +43,7 @@ func newValidateCmd() *cobra.Command {
 				return nil
 			}
 
+			errorCount, warnCount := 0, 0
 			for _, i := range issues {
 				location := ""
 				if i.Line > 0 {
@@ -34,11 +54,26 @@ func newValidateCmd() *cobra.Command {
 				} else {
 					fmt.Fprintf(os.Stderr, "%s [%s] %s%s\n", i.Severity, i.Rule, i.Message, location)
 				}
+				switch i.Severity {
+				case domain.SeverityError:
+					errorCount++
+				case domain.SeverityWarning:
+					warnCount++
+				}
 			}
 
+			fmt.Fprintf(os.Stderr, "\n%d error(s), %d warning(s) found.\n", errorCount, warnCount)
+
+			if errorCount > 0 || (strict && warnCount > 0) {
+				os.Exit(1)
+			}
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&strict, "strict", false, "exit 1 on warnings too (for CI)")
+	cmd.Flags().BoolVar(&skipFiles, "skip-files", false, "only check config syntax, skip file existence/permission checks")
+
 	return cmd
 }
 

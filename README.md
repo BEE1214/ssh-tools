@@ -80,9 +80,21 @@ source <(sshm completion bash)   # or zsh, fish
 |----------|------|-------------|
 | error | duplicate-host | Two Host blocks with same name |
 | error | dup-key | Same key twice in one block |
-| warning | missing-identity | No IdentityFile set |
+| error | invalid-port | Port not numeric or out of 1-65535 |
+| error | invalid-value | Boolean option not yes/no |
+| error | proxyjump-loop | ProxyJump points at the host itself |
+| error | missing-identity-file | IdentityFile path doesn't exist |
+| error | unsafe-permissions | Key or config readable by group/others |
+| warning | missing-identity | No IdentityFile or CertificateFile |
 | warning | strict-no | StrictHostKeyChecking no |
+| warning | duplicate-wildcard | More than one Host * block |
+| warning | missing-cert-file | CertificateFile path doesn't exist |
+| warning | cert-expired | Certificate past its validity window |
 | info | mixed-case | Non-canonical key casing |
+
+Run `sshm validate` for the full lint (config + files + certs), or
+`sshm validate --skip-files` for config-only checks. `--strict` exits 1 on
+warnings too, for CI. Exit codes: 0 clean, 1 issues found.
 
 ## Grouping
 
@@ -151,5 +163,3 @@ go build -o bin/sshm ./cmd/sshm/
 ## License
 
 GPL-2.0-only. See [LICENSE](LICENSE).
-
-Same license as the Linux kernel.
