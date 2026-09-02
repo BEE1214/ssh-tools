@@ -114,6 +114,9 @@ func mergeHost(dst *Host, src Host) {
 	if src.IdentityFile != "" {
 		dst.IdentityFile = src.IdentityFile
 	}
+	if src.CertificateFile != "" {
+		dst.CertificateFile = src.CertificateFile
+	}
 	if src.ProxyJump != "" {
 		dst.ProxyJump = src.ProxyJump
 	}

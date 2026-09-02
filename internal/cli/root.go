@@ -45,6 +45,7 @@ func NewRootCmd() *cobra.Command {
 		newValidateCmd(),
 		newGroupsCmd(),
 		newInitCmd(),
+		newCertCmd(),
 		newVersionCmd(),
 	)
 

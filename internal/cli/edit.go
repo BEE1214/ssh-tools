@@ -17,12 +17,15 @@ func newEditCmd() *cobra.Command {
 			name := args[0]
 
 			changes := make(map[string]string)
-			flags := []string{"hostname", "user", "port", "identity", "proxyjump", "proxycommand", "forwardagent", "forwardx11", "stricthostkeychecking", "loglevel"}
+			flags := []string{"hostname", "user", "port", "identity", "certificate", "proxyjump", "proxycommand", "forwardagent", "forwardx11", "stricthostkeychecking", "loglevel"}
 			for _, f := range flags {
 				if cmd.Flags().Changed(f) {
 					val, _ := cmd.Flags().GetString(f)
 					if f == "identity" {
 						f = "identityfile"
+					}
+					if f == "certificate" {
+						f = "certificatefile"
 					}
 					changes[f] = val
 				}
@@ -45,6 +48,7 @@ func newEditCmd() *cobra.Command {
 	cmd.Flags().String("user", "", "ssh user")
 	cmd.Flags().String("port", "", "ssh port")
 	cmd.Flags().String("identity", "", "identity file path")
+	cmd.Flags().String("certificate", "", "certificate file path")
 	cmd.Flags().String("proxyjump", "", "proxy jump host")
 	cmd.Flags().String("proxycommand", "", "proxy command")
 	cmd.Flags().String("forwardagent", "", "forward agent (yes/no)")

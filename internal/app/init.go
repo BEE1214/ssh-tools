@@ -71,6 +71,9 @@ func FormatHost(h domain.Host) string {
 	if h.IdentityFile != "" {
 		b.WriteString("  IdentityFile " + h.IdentityFile + "\n")
 	}
+	if h.CertificateFile != "" {
+		b.WriteString("  CertificateFile " + h.CertificateFile + "\n")
+	}
 	if h.ProxyJump != "" {
 		b.WriteString("  ProxyJump " + h.ProxyJump + "\n")
 	}

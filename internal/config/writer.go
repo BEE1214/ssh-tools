@@ -63,6 +63,9 @@ func writeHostBlock(buf *strings.Builder, h domain.Host) {
 	if h.IdentityFile != "" {
 		fmt.Fprintf(buf, "  IdentityFile %s\n", h.IdentityFile)
 	}
+	if h.CertificateFile != "" {
+		fmt.Fprintf(buf, "  CertificateFile %s\n", h.CertificateFile)
+	}
 	if h.ProxyJump != "" {
 		fmt.Fprintf(buf, "  ProxyJump %s\n", h.ProxyJump)
 	}

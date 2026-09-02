@@ -18,12 +18,13 @@ type Host struct {
 	Name string
 
 	// First-class SSH options — the ones you actually use.
-	HostName     string
-	User         string
-	Port         string
-	IdentityFile string
-	ProxyJump    string
-	ProxyCommand string
+	HostName        string
+	User            string
+	Port            string
+	IdentityFile    string
+	CertificateFile string
+	ProxyJump       string
+	ProxyCommand    string
 
 	// Boolean options stored as strings for faithful round-trip.
 	ForwardAgent string

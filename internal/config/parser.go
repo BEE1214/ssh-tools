@@ -207,6 +207,8 @@ func parseKeyValue(h *domain.Host, line string) error {
 		h.Port = value
 	case "IdentityFile":
 		h.IdentityFile = value
+	case "CertificateFile":
+		h.CertificateFile = value
 	case "ProxyJump":
 		h.ProxyJump = value
 	case "ProxyCommand":
@@ -262,6 +264,8 @@ func canonicalKey(key string) string {
 		return "Port"
 	case "identityfile":
 		return "IdentityFile"
+	case "certificatefile":
+		return "CertificateFile"
 	case "proxyjump":
 		return "ProxyJump"
 	case "proxycommand":

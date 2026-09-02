@@ -114,6 +114,8 @@ func applyChange(h *domain.Host, key, value string) {
 		h.Port = value
 	case "identityfile":
 		h.IdentityFile = value
+	case "certificatefile":
+		h.CertificateFile = value
 	case "proxyjump":
 		h.ProxyJump = value
 	case "proxycommand":
