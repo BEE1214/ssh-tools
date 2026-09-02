@@ -12,8 +12,8 @@ func TestFuzzyMatch_Empty(t *testing.T) {
 	if len(result) != 3 {
 		t.Fatalf("got %d, want 3", len(result))
 	}
-	if result[0] != "host-acq-dev" {
-		t.Errorf("first = %q, want host-acq-dev", result[0])
+	if result[0] != "emil" {
+		t.Errorf("first = %q, want emil (alphabetical)", result[0])
 	}
 }
 
@@ -37,8 +37,8 @@ func TestFuzzyMatch_Subsequence(t *testing.T) {
 		{Name: "host-acq-dev"},
 		{Name: "zf-poland3-mgmt"},
 	}
-	// "bad" matches "host-acq-dev" as a subsequence: b-o-s-c-h-a-c-q-d-e-v
-	result := FuzzyMatch(hosts, "bad")
+	// "had" matches "host-acq-dev" as a subsequence: h-o-s-t-a-c-q-d-e-v
+	result := FuzzyMatch(hosts, "had")
 	if len(result) != 1 {
 		t.Fatalf("got %d, want 1", len(result))
 	}
@@ -83,7 +83,7 @@ func TestFuzzyMatch_PrefixBeforeSubsequence(t *testing.T) {
 func TestFuzzyScore_ConsecutiveBonus(t *testing.T) {
 	// "host" contiguous in "host-acq-dev" should score higher than scattered
 	s1, _ := fuzzyScore("host-acq-dev", "host")
-	s2, _ := fuzzyScore("b-o-s-c-h", "host")
+	s2, _ := fuzzyScore("h-o-s-t", "host")
 	if s1 <= s2 {
 		t.Errorf("contiguous score %d should be > scattered score %d", s1, s2)
 	}

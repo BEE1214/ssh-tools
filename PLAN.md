@@ -102,9 +102,9 @@ sshm init                    # generate/repair Host * defaults block
 ### Main view: Host list
 ```
 ┌─ SSH Manager ──────────────────────────────────────────────────────┐
-│ Filter: host                                          [42 hosts]   │
+│ Filter: host                                           [42 hosts]   │
 │                                                                    │
-│ ▸ host          (6 hosts)                                        │
+│ ▸ host           (6 hosts)                                        │
 │   ▾ host-acq-dev      root @ example.com:20008  no key  │
 │   ▾ host-acq-local    root @ 10.0.0.5:20008              no key  │
 │   ▾ host-dev-acq      root @ 10.0.0.6:20008                   │

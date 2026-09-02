@@ -59,7 +59,7 @@ func TestGroupHosts(t *testing.T) {
 func TestGroupNames(t *testing.T) {
 	groups := map[string][]Host{
 		"ungrouped": {{Name: "emil"}},
-		"host":     {{Name: "host-1"}},
+		"host":      {{Name: "host-1"}},
 		"zf-poland": {{Name: "zf-poland1"}},
 	}
 	names := GroupNames(groups)
