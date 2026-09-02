@@ -15,3 +15,6 @@ vendor/
 
 # OS
 .DS_Store
+
+# MCP local state
+.mcp/
