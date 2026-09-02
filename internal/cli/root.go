@@ -18,6 +18,7 @@ func NewRootCmd() *cobra.Command {
 		Short:             "SSH config manager",
 		Long:              "Manage ~/.ssh/config hosts with a TUI and CLI.",
 		Version:           version,
+		Args:              cobra.ArbitraryArgs,
 		ValidArgsFunction: hostCompletion,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// No args -> TUI (not yet implemented).
