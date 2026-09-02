@@ -52,6 +52,8 @@ func newEditCmd() *cobra.Command {
 	cmd.Flags().String("stricthostkeychecking", "", "strict host key checking (yes/no/accept-new)")
 	cmd.Flags().String("loglevel", "", "log level")
 
+	registerHostFlagCompletion(cmd, "proxyjump")
+
 	return cmd
 }
 

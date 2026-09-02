@@ -81,6 +81,8 @@ func newAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&proxyJump, "proxyjump", "", "proxy jump host")
 	cmd.MarkFlagRequired("name")
 
+	registerHostFlagCompletion(cmd, "proxyjump")
+
 	return cmd
 }
 
