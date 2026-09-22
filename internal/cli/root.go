@@ -44,6 +44,8 @@ func NewRootCmd() *cobra.Command {
 		newDumpCmd(),
 		newValidateCmd(),
 		newGroupsCmd(),
+		newGroupsDisableCmd(),
+		newGroupsEnableCmd(),
 		newInitCmd(),
 		newCertCmd(),
 		newVersionCmd(),

@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"strings"
+
 	"github.com/spf13/cobra"
 )
 
@@ -60,4 +62,44 @@ func registerHostFlagCompletion(cmd *cobra.Command, flagNames ...string) {
 	for _, name := range flagNames {
 		_ = cmd.RegisterFlagCompletionFunc(name, hostFlagCompletion)
 	}
+}
+
+// groupCompletion is a ValidArgsFunction that completes group names (all
+// groups with hosts, plus currently disabled ones).
+func groupCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	a := newApp()
+	states, err := a.ListGroupsState()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	var result []string
+	for _, gs := range states {
+		if strings.HasPrefix(gs.Group, toComplete) {
+			result = append(result, gs.Group)
+		}
+	}
+	return result, cobra.ShellCompDirectiveNoFileComp
+}
+
+// disabledGroupCompletion is a ValidArgsFunction that completes only the
+// names of currently disabled groups (for `sshm groups enable <TAB>`).
+func disabledGroupCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	a := newApp()
+	states, err := a.ListGroupsState()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	var result []string
+	for _, gs := range states {
+		if len(gs.Disabled) > 0 && strings.HasPrefix(gs.Group, toComplete) {
+			result = append(result, gs.Group)
+		}
+	}
+	return result, cobra.ShellCompDirectiveNoFileComp
 }

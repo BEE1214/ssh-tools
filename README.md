@@ -54,7 +54,9 @@ sshm add --name foo --hostname 10.0.0.1 --user root --port 22 --identity ~/.ssh/
 sshm edit <hostname> --user root --port 20008
 sshm dump <hostname>         # effective config (like ssh -G)
 sshm validate                # lint config, report issues
-sshm groups                  # list detected groups + counts
+sshm groups                  # list groups + enable/disable state
+sshm groups disable <group>  # disable a group (hard gate, see below)
+sshm groups enable <group>   # re-enable a disabled group
 sshm init                    # generate/repair Host * defaults block
 ```
 
@@ -95,7 +97,40 @@ staging-api-01  -> staging
 myhost          -> (ungrouped)
 ```
 
-Override with a `# group: <name>` comment above the Host line.
+Override with a `# group: <name>` comment above the Host line (takes
+precedence over the name prefix):
+
+```
+# group: prod
+Host web-prod-1
+  HostName 10.0.0.1
+```
+
+## Disabling groups
+
+Use case: hosts you must not reach by accident (e.g. production deployments).
+Disabling a group is a hard gate, not just an sshm-side guard:
+
+```bash
+sshm groups disable deploy     # comment the group's host blocks out
+sshm groups                    # show groups + which hosts are disabled
+sshm groups enable deploy      # restore the blocks byte-for-byte
+```
+
+What disable does:
+
+- The group's host blocks are commented out of `~/.ssh/config` between
+  `# sshm disabled group=<name> start/end` markers — raw `ssh <host>` no
+  longer resolves them.
+- The group is recorded in `~/.ssh/config.sshm-groups` (sidecar state).
+- `sshm connect <host>` and `sshm copy` refuse the group's hosts.
+- Disabled hosts are hidden from `sshm list` (use `--all`) and from shell
+  completion.
+
+Enable restores the original block text exactly as it was (the parser
+remembers the verbatim bytes) and cleans up the state file. The state file
+is defense-in-depth: a disabled group stays disabled even if its blocks are
+removed from the config by hand.
 
 ## Config preservation
 

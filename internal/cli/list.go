@@ -12,20 +12,25 @@ import (
 func newListCmd() *cobra.Command {
 	var flat bool
 	var group string
+	var all bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all hosts",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a := newApp()
-			hosts, err := a.ListHosts(group)
+			hosts, err := a.ListHosts(group, all)
 			if err != nil {
 				return err
 			}
 
 			if flat {
 				for _, h := range hosts {
-					fmt.Println(h.Name)
+					if h.Disabled {
+						fmt.Printf("%s [disabled]\n", h.Name)
+					} else {
+						fmt.Println(h.Name)
+					}
 				}
 				return nil
 			}
@@ -37,6 +42,7 @@ func newListCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&flat, "flat", false, "flat list (one host per line, for scripting/fzf)")
 	cmd.Flags().StringVar(&group, "group", "", "filter by group name")
+	cmd.Flags().BoolVar(&all, "all", false, "include disabled hosts (marked [disabled])")
 
 	return cmd
 }
@@ -58,8 +64,12 @@ func printHosts(hosts []domain.Host) {
 			}
 			hostname := h.DisplayHost()
 			user := h.DisplayUser()
+			mark := ""
+			if h.Disabled {
+				mark = " [disabled]"
+			}
 
-			fmt.Fprintf(w, "  %s\t%s@%s:%s\t%s\n", h.Name, user, hostname, port, id)
+			fmt.Fprintf(w, "  %s%s	%s@%s:%s	%s\n", h.Name, mark, user, hostname, port, id)
 		}
 		fmt.Fprintln(w)
 	}

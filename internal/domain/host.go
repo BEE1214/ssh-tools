@@ -52,6 +52,18 @@ type Host struct {
 	// Empty string means ungrouped.
 	Group string
 
+	// Disabled marks a host block that is currently commented out of the
+	// config via "# sshm disabled group=<name> start/end" markers. Disabled
+	// hosts are invisible to raw ssh (unresolvable) and rejected by
+	// sshm connect/copy; enable restores the original block bytes.
+	Disabled bool
+
+	// RawBlock is the verbatim source text of this host block (Host line
+	// through the last option/comment line, without trailing newline).
+	// Populated by the parser; the writer re-emits it verbatim for disabled
+	// blocks so enable can restore the original formatting byte-for-byte.
+	RawBlock string
+
 	// Source indicates how this block was created.
 	Source HostSource
 

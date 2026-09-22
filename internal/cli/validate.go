@@ -3,8 +3,8 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
-	"github.com/adamdvorsky/ssh-tools/internal/domain"
 	"github.com/spf13/cobra"
 )
 
@@ -45,18 +45,66 @@ func newValidateCmd() *cobra.Command {
 func newGroupsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "groups",
-		Short: "List detected groups and host counts",
+		Short: "List groups with enable/disable state",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a := newApp()
-			groups, err := a.ListGroups()
+			states, err := a.ListGroupsState()
 			if err != nil {
 				return err
 			}
 
-			names := domain.GroupNames(groups)
-			for _, name := range names {
-				fmt.Printf("%s (%d)\n", name, len(groups[name]))
+			for _, gs := range states {
+				if len(gs.Disabled) > 0 {
+					fmt.Printf("%s (disabled: %s)\n", gs.Group, strings.Join(gs.Disabled, ", "))
+				} else {
+					fmt.Printf("%s (%d)\n", gs.Group, gs.Total)
+				}
 			}
+			return nil
+		},
+	}
+	cmd.AddCommand(newGroupsDisableCmd(), newGroupsEnableCmd())
+	return cmd
+}
+
+func newGroupsDisableCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "disable <group>",
+		Short: "Disable a group: comment its host blocks out of the ssh config",
+		Long: `Disable a group: the group's host blocks are commented out of
+~/.ssh/config under "# sshm disabled" markers, the group is recorded in a
+sidecar state file (~/.ssh/config.sshm-groups), and sshm connect/copy refuse
+its hosts. Raw ` + "`ssh <host>`" + ` also fails to resolve — a hard gate for
+e.g. production deployments.`,
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: groupCompletion,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			a := newApp()
+			if err := a.DisableGroup(args[0]); err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "group %q disabled — blocks commented out of %s\n", args[0], a.ConfigPath())
+			return nil
+		},
+	}
+	return cmd
+}
+
+func newGroupsEnableCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "enable <group>",
+		Short: "Re-enable a disabled group (restore its host blocks verbatim)",
+		Long: `Re-enable a previously disabled group: the host blocks between the
+group's "# sshm disabled" markers are restored byte-for-byte and the group is
+removed from the sidecar state file.`,
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: disabledGroupCompletion,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			a := newApp()
+			if err := a.EnableGroup(args[0]); err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "group %q enabled — blocks restored in %s\n", args[0], a.ConfigPath())
 			return nil
 		},
 	}

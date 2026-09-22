@@ -24,6 +24,16 @@ func (a *App) Copy(src, dst, rsyncFlags string) error {
 		return fmt.Errorf("neither source nor destination is a remote path — expected host:path or user@host:path")
 	}
 
+	// Gate: refuse remote targets whose host belongs to a disabled group.
+	// Ad-hoc targets (not in config) are not gated.
+	if cfg, err := a.load(); err == nil {
+		if !isAdHoc {
+			if err := a.ensureNotDisabled(cfg, hostFromPath(remote)); err != nil {
+				return err
+			}
+		}
+	}
+
 	binary, err := exec.LookPath("rsync")
 	if err != nil {
 		return fmt.Errorf("rsync not found in PATH: %w", err)

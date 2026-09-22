@@ -21,6 +21,11 @@ func (a *App) Connect(name string) error {
 		return err
 	}
 
+	// Gate: refuse hosts whose group is disabled (commented out of config).
+	if err := a.ensureNotDisabled(cfg, name); err != nil {
+		return err
+	}
+
 	idx := findHostIndex(cfg.Hosts, name)
 	if idx == -1 {
 		// Not in config — check for user@hostname pattern for ad-hoc connect.
