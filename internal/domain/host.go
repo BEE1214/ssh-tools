@@ -46,6 +46,15 @@ type Host struct {
 	// The writer outputs these verbatim.
 	Extra map[string]string
 
+	// Port-forwarding options — ssh_config(5) allows many of each per
+	// block, so unlike the fields above these are first-class slices
+	// rather than folding into Extra. Each entry is stored normalized in
+	// config syntax: two space-separated tokens for local/remote
+	// ("10100 192.168.1.100:80"), one token for dynamic ("1080").
+	LocalForwards   []string
+	RemoteForwards  []string
+	DynamicForwards []string
+
 	// Metadata — derived, not written to config.
 
 	// Group is the detected group name (from Name prefix or "# group:" comment).

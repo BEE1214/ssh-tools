@@ -87,6 +87,70 @@ func TestValidate_WildcardSkipsIdentity(t *testing.T) {
 	}
 }
 
+func TestValidate_ForwardValid(t *testing.T) {
+	hosts := []Host{
+		{Name: "emil", LineStart: 1, IdentityFile: "~/.ssh/key", LocalForwards: []string{"10100 192.168.1.100:80"}},
+	}
+	issues := Validate(hosts)
+	for _, i := range issues {
+		if i.Rule == "invalid-forward" {
+			t.Errorf("unexpected invalid-forward issue: %+v", i)
+		}
+	}
+}
+
+func TestValidate_ForwardInvalidPort(t *testing.T) {
+	hosts := []Host{
+		{Name: "emil", LineStart: 1, IdentityFile: "~/.ssh/key", LocalForwards: []string{"notaport 192.168.1.100:80"}},
+	}
+	issues := Validate(hosts)
+	found := false
+	for _, i := range issues {
+		if i.Rule == "invalid-forward" && i.HostName == "emil" && i.Severity == SeverityError {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected invalid-forward error for emil")
+	}
+}
+
+func TestValidate_DuplicateListenPort(t *testing.T) {
+	hosts := []Host{
+		{Name: "emil", LineStart: 1, IdentityFile: "~/.ssh/key", LocalForwards: []string{"10100 192.168.1.100:80"}},
+		{Name: "jefry", LineStart: 5, IdentityFile: "~/.ssh/key", RemoteForwards: []string{"10100 localhost:80"}},
+	}
+	issues := Validate(hosts)
+	count := 0
+	for _, i := range issues {
+		if i.Rule == "duplicate-listen-port" {
+			count++
+			if i.Severity != SeverityWarning {
+				t.Errorf("duplicate-listen-port severity = %v, want warning", i.Severity)
+			}
+		}
+	}
+	if count != 2 {
+		t.Errorf("expected 2 duplicate-listen-port issues (one per host), got %d", count)
+	}
+}
+
+func TestValidate_ForwardSkipsWildcardAndDevPod(t *testing.T) {
+	hosts := []Host{
+		{Name: "*", LineStart: 1, LocalForwards: []string{"badport 192.168.1.100:80"}},
+		{Name: "pod.devpod", LineStart: 5, Source: SourceDevPod, LocalForwards: []string{"badport 192.168.1.100:80"}},
+	}
+	issues := Validate(hosts)
+	for _, i := range issues {
+		if i.Rule == "invalid-forward" {
+			t.Errorf("wildcard/DevPod hosts should skip forward validation, got: %+v", i)
+		}
+		if i.Rule == "duplicate-listen-port" {
+			t.Errorf("wildcard/DevPod forwards should not feed duplicate-listen-port, got: %+v", i)
+		}
+	}
+}
+
 func TestFilterByHost(t *testing.T) {
 	issues := []Issue{
 		{HostName: "emil", Rule: "missing-identity"},

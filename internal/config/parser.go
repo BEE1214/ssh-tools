@@ -298,6 +298,12 @@ func parseKeyValue(h *domain.Host, line string) error {
 		h.Ciphers = value
 	case "MACs":
 		h.MACs = value
+	case "LocalForward":
+		h.LocalForwards = append(h.LocalForwards, normalizeForwardValue(value))
+	case "RemoteForward":
+		h.RemoteForwards = append(h.RemoteForwards, normalizeForwardValue(value))
+	case "DynamicForward":
+		h.DynamicForwards = append(h.DynamicForwards, normalizeForwardValue(value))
 	default:
 		if h.Extra == nil {
 			h.Extra = make(map[string]string)
@@ -310,6 +316,14 @@ func parseKeyValue(h *domain.Host, line string) error {
 	}
 
 	return nil
+}
+
+// normalizeForwardValue collapses internal whitespace in a
+// LocalForward/RemoteForward/DynamicForward value to single spaces, so
+// entries are stored in a stable, comparable form regardless of how they
+// were spaced in the source file.
+func normalizeForwardValue(v string) string {
+	return strings.Join(strings.Fields(v), " ")
 }
 
 // canonicalKey normalizes an SSH config key to canonical form.
@@ -357,6 +371,12 @@ func canonicalKey(key string) string {
 		return "Ciphers"
 	case "macs":
 		return "MACs"
+	case "localforward":
+		return "LocalForward"
+	case "remoteforward":
+		return "RemoteForward"
+	case "dynamicforward":
+		return "DynamicForward"
 	case "serveraliveinterval":
 		return "ServerAliveInterval"
 	case "serveralivecountmax":

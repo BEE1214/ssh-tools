@@ -80,7 +80,7 @@ func TestDisableEnableCycle(t *testing.T) {
 	}
 
 	// Gate: connect to a disabled host must be refused.
-	if err := a.Connect("deploy-acq"); err == nil {
+	if err := a.Connect("deploy-acq", nil); err == nil {
 		t.Error("Connect to disabled host should fail")
 	} else if !strings.Contains(err.Error(), "disabled") {
 		t.Errorf("Connect error should mention disabled group, got: %v", err)

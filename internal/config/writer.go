@@ -131,6 +131,15 @@ func writeHostBlock(buf *strings.Builder, h domain.Host) {
 	if h.MACs != "" {
 		fmt.Fprintf(buf, "  MACs %s\n", h.MACs)
 	}
+	for _, f := range h.LocalForwards {
+		fmt.Fprintf(buf, "  LocalForward %s\n", f)
+	}
+	for _, f := range h.RemoteForwards {
+		fmt.Fprintf(buf, "  RemoteForward %s\n", f)
+	}
+	for _, f := range h.DynamicForwards {
+		fmt.Fprintf(buf, "  DynamicForward %s\n", f)
+	}
 
 	// Write extra options in sorted order for deterministic output.
 	for _, opt := range sortedKeys(h.Extra) {
