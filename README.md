@@ -8,7 +8,7 @@ TUI and CLI tool for managing `~/.ssh/config`. Reads and writes your SSH config 
 
 ## Status
 
-Phase 1 complete: CLI working, TUI pending.
+CLI and TUI (list, filter, edit, new, duplicate, delete) are working. The TUI has been tested through its model and in a pty smoke test; see [Known limitations](#known-limitations).
 
 ## Why
 
@@ -43,7 +43,7 @@ Move `bin/sshm` somewhere in your PATH.
 ## Usage
 
 ```
-sshm                         # launch TUI (pending)
+sshm                         # launch TUI (needs a terminal; use 'sshm list' in scripts)
 sshm <hostname>              # connect: exec ssh <hostname>
 sshm connect <hostname>      # same, explicit
 sshm list                    # list all hosts, grouped
@@ -63,6 +63,30 @@ sshm init                    # generate/repair Host * defaults block
 ### Connect
 
 `sshm <host>` replaces the current process with `ssh <host>` via `syscall.Exec`. Zero overhead — ssh gets direct control of stdin/stdout/stderr/tty.
+
+### TUI
+
+`sshm` with no arguments opens a grouped host browser. Groups start collapsed. Enter on a host quits the TUI (restoring the terminal) and then connects exactly like `sshm <host>`.
+
+| Key | Action |
+|-----|--------|
+| `↑`/`k`, `↓`/`j` | Move cursor |
+| `→`/`l`, `←`/`h` | Expand / collapse group (`←` on a host jumps to its group) |
+| `Enter` | Connect to host; toggle a group |
+| `/` | Fuzzy filter by host name (flat list of matches). `Enter` keeps the filter, `Esc` clears it |
+| `r` | Reload config from disk |
+| `?` | Help |
+| `q`, `Esc`, `Ctrl+C` | Quit without connecting |
+
+**Editing is currently disabled in the TUI.** The config writer re-serializes the whole file (see Known limitations), so `e`/`n`/`d`/`D` only show a notice; use the CLI (`sshm edit`, `add`, `copy`). The editor code is in place and returns once the managed-config writer from `PLAN-include.md` lands. When enabled: `e` edit, `n` new, `d` duplicate, `D` delete (asks `y`/`n`).
+
+In the editor: `Tab`/`Shift+Tab` move between fields, `Enter` on the last field or `Ctrl+S` saves, `Esc` cancels. Validation errors block the save and are shown inline; warnings (e.g. no `IdentityFile`) are shown but do not block.
+
+- Hosts in a disabled group are shown dimmed with a `[disabled]` tag and cannot be connected to, edited or deleted. Enable the group with `sshm groups enable <group>`.
+- DevPod hosts are tagged `[read-only]`: you can connect to them, but not edit, duplicate or delete them.
+- The host name is read-only when editing (there is no rename operation); to rename, duplicate and delete.
+- The status bar shows the number of validation warnings/errors in the config (`sshm validate` lists them).
+- All changes go through the same code path as the CLI: the file is re-read, a backup is written, and the new content is written atomically. The TUI never overwrites changes made to the file while it is open.
 
 ### fzf integration
 
@@ -164,21 +188,26 @@ ssh-tools/
     config/                  # parser, writer, backup, atomic write
     app/                     # orchestration: list, add, edit, connect, validate, dump
     cli/                     # cobra commands
-    tui/                     # bubbletea TUI (pending)
+    tui/                     # bubbletea TUI (list + editor)
   testdata/                  # golden files for parser tests
 ```
 
 ## Dependencies
 
 - [cobra](https://github.com/spf13/cobra) — CLI framework
-- [bubbletea](https://github.com/charmbracelet/bubbletea) — TUI (pending)
-- [bubbles](https://github.com/charmbracelet/bubbles) — TUI components (pending)
-- [lipgloss](https://github.com/charmbracelet/lipgloss) — TUI styling (pending)
+- [bubbletea](https://github.com/charmbracelet/bubbletea) (v2) — TUI
+- [bubbles](https://github.com/charmbracelet/bubbles) (v2) — TUI components (text input)
+- [lipgloss](https://github.com/charmbracelet/lipgloss) (v2) — TUI styling
+
+## Known limitations
+
+- **Writes normalize the whole file.** Any change made through `sshm add`, `edit`, `groups disable/enable` (or the TUI, once editing is re-enabled) re-serializes the entire config, not just the edited host: indentation becomes 2 spaces, option names get canonical casing, runs of blank lines collapse, comment lines *inside* a host block are dropped, comments between hosts are moved to the top of the file, and DevPod block options are re-ordered. A timestamped backup (`config.bak.<timestamp>`) is written next to the config before every change. Configs already in this canonical form round-trip byte-for-byte.
+- The TUI cannot rename a host, edit a host's group, or edit options other than the six in the editor; use the CLI (`sshm edit --help`) or edit the file by hand.
 
 ## Development
 
 ```bash
-go test ./internal/...       # run tests (36 passing)
+go test ./internal/...       # run tests
 go vet ./...                 # lint
 go build -o bin/sshm ./cmd/sshm/
 ```

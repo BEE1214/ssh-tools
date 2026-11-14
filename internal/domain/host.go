@@ -8,7 +8,8 @@ const (
 	SourceManual HostSource = iota
 	// SourceDevPod is a host block managed by DevPod (delimited by
 	// "# DevPod Start <name>" / "# DevPod End <name>" marker comments).
-	// These are read-only in the TUI and never reformatted by the writer.
+	// These are read-only in the TUI (no edit/duplicate/delete). The writer
+	// keeps their marker comments but re-emits the options in canonical order.
 	SourceDevPod
 )
 

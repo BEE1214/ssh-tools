@@ -9,7 +9,7 @@ import (
 )
 
 // NewRootCmd creates the root cobra command.
-//   - No args: launches TUI (future).
+//   - No args: launches the TUI (requires a terminal on stdin and stdout).
 //   - One arg that matches a host name: connects via ssh.
 //   - More args: connects, forwarding everything after the host verbatim to ssh.
 //   - Subcommands: list, search, add, edit, copy, dump, validate, groups, init, version.
@@ -29,9 +29,9 @@ ssh directly. Add -N yourself for no-shell tunnels.`,
 		Args:              cobra.ArbitraryArgs,
 		ValidArgsFunction: hostCompletion,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// No args -> TUI (not yet implemented).
+			// No args -> TUI.
 			if len(args) == 0 {
-				return fmt.Errorf("TUI not yet implemented — use 'sshm list' to see hosts")
+				return runTUI(cmd)
 			}
 			// One arg -> connect.
 			if len(args) == 1 {
