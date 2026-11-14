@@ -114,6 +114,9 @@ func mergeHost(dst *Host, src Host) {
 	if src.IdentityFile != "" {
 		dst.IdentityFile = src.IdentityFile
 	}
+	if src.CertificateFile != "" {
+		dst.CertificateFile = src.CertificateFile
+	}
 	if src.ProxyJump != "" {
 		dst.ProxyJump = src.ProxyJump
 	}
@@ -153,4 +156,10 @@ func mergeHost(dst *Host, src Host) {
 		}
 		dst.Extra[k] = v
 	}
+
+	// Port-forwarding options are repeated, so matching blocks accumulate
+	// rather than override (unlike the single-value fields above).
+	dst.LocalForwards = append(dst.LocalForwards, src.LocalForwards...)
+	dst.RemoteForwards = append(dst.RemoteForwards, src.RemoteForwards...)
+	dst.DynamicForwards = append(dst.DynamicForwards, src.DynamicForwards...)
 }

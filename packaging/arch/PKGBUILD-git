@@ -1,0 +1,71 @@
+# Builds an Arch Linux package from the current source tree.
+# Usage: cd packaging/arch && makepkg -f
+
+pkgname=sshm
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="SSH config manager — TUI and CLI tool for managing ~/.ssh/config"
+arch=('x86_64' 'aarch64')
+url="https://github.com/BEE1214/ssh-tools"
+license=('GPL-2.0-only')
+makedepends=('go' 'rsync')
+optdepends=(
+    'bash: shell completion'
+    'zsh: shell completion'
+    'fish: shell completion'
+)
+source=()
+sha256sums=()
+
+# Use the current git checkout instead of downloading a tarball.
+prepare() {
+    cd "${srcdir}"
+    # Copy source tree excluding packaging artifacts and build output.
+    rsync -a \
+        --exclude='packaging' \
+        --exclude='/sshm' \
+        --exclude='.git' \
+        --exclude='src' \
+        --exclude='pkg' \
+        --exclude='.mcp' \
+        "${startdir}/../.." "${srcdir}/${pkgname}-${pkgver}"
+}
+
+build() {
+    cd "${srcdir}/${pkgname}-${pkgver}"
+
+    export CGO_ENABLED=0
+    export CGO_LDFLAGS="${LDFLAGS}"
+    export GOCACHE="${srcdir}/go-cache"
+    export GOMODCACHE="${srcdir}/go-mod"
+
+    go build \
+        -trimpath \
+        -ldflags "-s -w -X github.com/adamdvorsky/ssh-tools/internal/cli.version=${pkgver}" \
+        -o sshm \
+        ./cmd/sshm/
+}
+
+check() {
+    cd "${srcdir}/${pkgname}-${pkgver}"
+    go test ./internal/...
+}
+
+package() {
+    cd "${srcdir}/${pkgname}-${pkgver}"
+
+    # Binary
+    install -Dm755 sshm "${pkgdir}/usr/bin/sshm"
+
+    # Shell completions
+    ./sshm completion bash > sshm.bash
+    ./sshm completion zsh > _sshm
+    ./sshm completion fish > sshm.fish
+
+    install -Dm644 sshm.bash "${pkgdir}/usr/share/bash-completion/completions/sshm"
+    install -Dm644 _sshm "${pkgdir}/usr/share/zsh/site-functions/_sshm"
+    install -Dm644 sshm.fish "${pkgdir}/usr/share/fish/vendor_completions.d/sshm.fish"
+
+    # License
+    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

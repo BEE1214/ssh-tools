@@ -15,7 +15,7 @@ func newSearchCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a := newApp()
-			hosts, err := a.ListHosts("")
+			hosts, err := a.ListHosts("", false)
 			if err != nil {
 				return err
 			}

@@ -67,6 +67,29 @@ func TestEffectiveConfig_OverrideOrder(t *testing.T) {
 	}
 }
 
+func TestEffectiveConfig_ForwardsAppend(t *testing.T) {
+	hosts := []Host{
+		{Name: "*", LocalForwards: []string{"9000 127.0.0.1:9000"}},
+		{Name: "jump", HostName: "10.0.0.5", LocalForwards: []string{"9001 127.0.0.1:9001"}, RemoteForwards: []string{"8080 localhost:80"}},
+	}
+	result, err := EffectiveConfig(hosts, "jump")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLocal := []string{"9000 127.0.0.1:9000", "9001 127.0.0.1:9001"}
+	if len(result.LocalForwards) != len(wantLocal) {
+		t.Fatalf("LocalForwards = %v, want %v", result.LocalForwards, wantLocal)
+	}
+	for i, w := range wantLocal {
+		if result.LocalForwards[i] != w {
+			t.Errorf("LocalForwards[%d] = %q, want %q", i, result.LocalForwards[i], w)
+		}
+	}
+	if len(result.RemoteForwards) != 1 || result.RemoteForwards[0] != "8080 localhost:80" {
+		t.Errorf("RemoteForwards = %v", result.RemoteForwards)
+	}
+}
+
 func TestMatchPattern(t *testing.T) {
 	tests := []struct {
 		pattern string

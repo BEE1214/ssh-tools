@@ -18,12 +18,13 @@ type Host struct {
 	Name string
 
 	// First-class SSH options — the ones you actually use.
-	HostName     string
-	User         string
-	Port         string
-	IdentityFile string
-	ProxyJump    string
-	ProxyCommand string
+	HostName        string
+	User            string
+	Port            string
+	IdentityFile    string
+	CertificateFile string
+	ProxyJump       string
+	ProxyCommand    string
 
 	// Boolean options stored as strings for faithful round-trip.
 	ForwardAgent string
@@ -45,11 +46,32 @@ type Host struct {
 	// The writer outputs these verbatim.
 	Extra map[string]string
 
+	// Port-forwarding options — ssh_config(5) allows many of each per
+	// block, so unlike the fields above these are first-class slices
+	// rather than folding into Extra. Each entry is stored normalized in
+	// config syntax: two space-separated tokens for local/remote
+	// ("10100 192.168.1.100:80"), one token for dynamic ("1080").
+	LocalForwards   []string
+	RemoteForwards  []string
+	DynamicForwards []string
+
 	// Metadata — derived, not written to config.
 
 	// Group is the detected group name (from Name prefix or "# group:" comment).
 	// Empty string means ungrouped.
 	Group string
+
+	// Disabled marks a host block that is currently commented out of the
+	// config via "# sshm disabled group=<name> start/end" markers. Disabled
+	// hosts are invisible to raw ssh (unresolvable) and rejected by
+	// sshm connect/copy; enable restores the original block bytes.
+	Disabled bool
+
+	// RawBlock is the verbatim source text of this host block (Host line
+	// through the last option/comment line, without trailing newline).
+	// Populated by the parser; the writer re-emits it verbatim for disabled
+	// blocks so enable can restore the original formatting byte-for-byte.
+	RawBlock string
 
 	// Source indicates how this block was created.
 	Source HostSource

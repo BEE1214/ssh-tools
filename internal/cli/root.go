@@ -11,12 +11,20 @@ import (
 // NewRootCmd creates the root cobra command.
 //   - No args: launches TUI (future).
 //   - One arg that matches a host name: connects via ssh.
+//   - More args: connects, forwarding everything after the host verbatim to ssh.
 //   - Subcommands: list, search, add, edit, copy, dump, validate, groups, init, version.
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:               "sshm",
-		Short:             "SSH config manager",
-		Long:              "Manage ~/.ssh/config hosts with a TUI and CLI.",
+		Use:   "sshm",
+		Short: "SSH config manager",
+		Long: `Manage ~/.ssh/config hosts with a TUI and CLI.
+
+Anything after the host name is passed to ssh verbatim:
+
+  sshm zf-poland1 -L 10100:192.168.1.100:80
+
+ssh accepts options after the destination, so this works like calling
+ssh directly. Add -N yourself for no-shell tunnels.`,
 		Version:           version,
 		Args:              cobra.ArbitraryArgs,
 		ValidArgsFunction: hostCompletion,
@@ -27,12 +35,14 @@ func NewRootCmd() *cobra.Command {
 			}
 			// One arg -> connect.
 			if len(args) == 1 {
-				return runConnect(cmd, args[0])
+				return runConnect(cmd, args[0], nil)
 			}
-			return cmd.Help()
+			// More args -> connect, passing the rest to ssh verbatim.
+			return runConnect(cmd, args[0], args[1:])
 		},
 		SilenceUsage: true,
 	}
+	root.Flags().SetInterspersed(false)
 
 	root.AddCommand(
 		newListCmd(),
@@ -45,6 +55,8 @@ func NewRootCmd() *cobra.Command {
 		newValidateCmd(),
 		newGroupsCmd(),
 		newInitCmd(),
+		newCertCmd(),
+		newForwardCmd(),
 		newVersionCmd(),
 	)
 

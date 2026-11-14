@@ -42,6 +42,12 @@ func Validate(hosts []Host) []Issue {
 
 	seenNames := make(map[string]int) // name -> first line
 
+	type portOccurrence struct {
+		host string
+		line int
+	}
+	listenPorts := make(map[string][]portOccurrence)
+
 	for _, h := range hosts {
 		// Duplicate host name
 		if prevLine, ok := seenNames[h.Name]; ok {
@@ -83,8 +89,59 @@ func Validate(hosts []Host) []Issue {
 			continue
 		}
 
+		// Forward entries — skipped for wildcard (a Host * block's forwards
+		// are inherited defaults, not a directly connectable target).
+		if !h.IsWildcard() {
+			checkForwards := func(kind ForwardKind, entries []string) {
+				for _, entry := range entries {
+					if err := ValidateForwardEntry(kind, entry); err != nil {
+						issues = append(issues, Issue{
+							HostName: h.Name,
+							Severity: SeverityError,
+							Rule:     "invalid-forward",
+							Message:  err.Error(),
+							Line:     h.LineStart,
+						})
+						continue
+					}
+					port := ListenPort(kind, entry)
+					listenPorts[port] = append(listenPorts[port], portOccurrence{host: h.Name, line: h.LineStart})
+				}
+			}
+			checkForwards(ForwardLocal, h.LocalForwards)
+			checkForwards(ForwardRemote, h.RemoteForwards)
+			checkForwards(ForwardDynamic, h.DynamicForwards)
+		}
+
 		// Duplicate keys within a block (check Extra + known fields)
 		// This is detected at parse time; here we just check for common patterns.
+	}
+
+	// Duplicate listen ports across the whole config (collected above,
+	// after the per-host loop so every host's entries are known).
+	ports := make([]string, 0, len(listenPorts))
+	for port := range listenPorts {
+		ports = append(ports, port)
+	}
+	for i := 1; i < len(ports); i++ {
+		for j := i; j > 0 && ports[j-1] > ports[j]; j-- {
+			ports[j-1], ports[j] = ports[j], ports[j-1]
+		}
+	}
+	for _, port := range ports {
+		occurrences := listenPorts[port]
+		if len(occurrences) < 2 {
+			continue
+		}
+		for _, occ := range occurrences {
+			issues = append(issues, Issue{
+				HostName: occ.host,
+				Severity: SeverityWarning,
+				Rule:     "duplicate-listen-port",
+				Message:  fmt.Sprintf("listen port %s is configured in more than one place", port),
+				Line:     occ.line,
+			})
+		}
 	}
 
 	// Sort by line number

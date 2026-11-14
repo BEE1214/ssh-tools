@@ -71,6 +71,9 @@ func FormatHost(h domain.Host) string {
 	if h.IdentityFile != "" {
 		b.WriteString("  IdentityFile " + h.IdentityFile + "\n")
 	}
+	if h.CertificateFile != "" {
+		b.WriteString("  CertificateFile " + h.CertificateFile + "\n")
+	}
 	if h.ProxyJump != "" {
 		b.WriteString("  ProxyJump " + h.ProxyJump + "\n")
 	}
@@ -100,6 +103,15 @@ func FormatHost(h domain.Host) string {
 	}
 	if h.MACs != "" {
 		b.WriteString("  MACs " + h.MACs + "\n")
+	}
+	for _, f := range h.LocalForwards {
+		b.WriteString("  LocalForward " + f + "\n")
+	}
+	for _, f := range h.RemoteForwards {
+		b.WriteString("  RemoteForward " + f + "\n")
+	}
+	for _, f := range h.DynamicForwards {
+		b.WriteString("  DynamicForward " + f + "\n")
 	}
 
 	for k, v := range h.Extra {

@@ -11,13 +11,21 @@ import (
 )
 
 // Connect verifies the host exists in config, then replaces the current
-// process with ssh connecting to that host.
+// process with ssh connecting to that host. extraArgs is passed to ssh
+// verbatim, after the destination — this is the documented sshm contract
+// (e.g. `sshm host -L 10100:192.168.1.100:80`); ssh accepts options after
+// the destination just as it does before.
 //
 // Uses syscall.Exec so ssh gets direct control of stdin/stdout/stderr/tty.
 // This function only returns on error — on success the process is replaced.
-func (a *App) Connect(name string) error {
+func (a *App) Connect(name string, extraArgs []string) error {
 	cfg, err := a.load()
 	if err != nil {
+		return err
+	}
+
+	// Gate: refuse hosts whose group is disabled (commented out of config).
+	if err := a.ensureNotDisabled(cfg, name); err != nil {
 		return err
 	}
 
@@ -25,7 +33,7 @@ func (a *App) Connect(name string) error {
 	if idx == -1 {
 		// Not in config — check for user@hostname pattern for ad-hoc connect.
 		if strings.Contains(name, "@") {
-			return a.connectAdHoc(name)
+			return a.connectAdHoc(name, extraArgs)
 		}
 		// Try fuzzy suggestion
 		suggestion := suggestHost(cfg.Hosts, name)
@@ -40,7 +48,7 @@ func (a *App) Connect(name string) error {
 		return fmt.Errorf("ssh not found in PATH: %w", err)
 	}
 
-	argv := append([]string{"ssh"}, name)
+	argv := append([]string{"ssh", name}, extraArgs...)
 	env := os.Environ()
 
 	// syscall.Exec replaces the process. This never returns on success.
@@ -51,15 +59,16 @@ func (a *App) Connect(name string) error {
 	return nil // unreachable
 }
 
-// connectAdHoc connects to a user@hostname not in the config file,
-// using the default identity key.
-func (a *App) connectAdHoc(target string) error {
+// connectAdHoc connects to a user@hostname not in the config file, using
+// the default identity key. extraArgs is passed to ssh verbatim, after
+// the target.
+func (a *App) connectAdHoc(target string, extraArgs []string) error {
 	binary, err := exec.LookPath("ssh")
 	if err != nil {
 		return fmt.Errorf("ssh not found in PATH: %w", err)
 	}
 
-	argv := []string{"ssh", "-i", domain.DefaultIdentityFile, target}
+	argv := append([]string{"ssh", "-i", domain.DefaultIdentityFile, target}, extraArgs...)
 	env := os.Environ()
 
 	if err := syscall.Exec(binary, argv, env); err != nil {

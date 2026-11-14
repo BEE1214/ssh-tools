@@ -137,6 +137,20 @@ install_completions() {
     done
 }
 
+# --- Usage ---
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Builds sshm and installs it to $INSTALL_DIR.
+Optionally installs shell completion for bash, zsh, or fish.
+
+Options:
+  -h, --help    Show this help message and exit
+EOF
+}
+
 # --- PATH check ---
 
 check_path() {
@@ -154,6 +168,19 @@ check_path() {
 # --- Main ---
 
 main() {
+    case "${1:-}" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        "") ;;
+        *)
+            error "Unknown option: $1"
+            usage
+            exit 1
+            ;;
+    esac
+
     echo -e "${CYAN}sshm installer${NC}"
     echo
 
@@ -169,4 +196,4 @@ main() {
     echo "  Run:    $BINARY_NAME list"
 }
 
-main
+main "$@"
