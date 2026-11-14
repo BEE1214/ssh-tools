@@ -178,15 +178,27 @@ after P1-P3 so every TUI save already goes through `saveManaged`.
 Per-group files; `sshm fmt`; editing main beyond `setup`/`import`/`init`; Match-block
 editing; non-OpenSSH clients that ignore `Include` (Paramiko, as far as I know).
 
-## 7. Open questions for Adam
-1. Command name: `sshm setup` vs folding into `sshm init` (`init` already means "Host * defaults")?
-2. Single `sshm.conf` (recommended) vs `config.d/*.conf` glob? Glob = other tools may drop
-   files too, less control over what sshm treats as writable. Backups/temp files must then
-   live outside `config.d/` (this plan already puts backups in `~/.ssh/sshm-backups/`).
-3. Ship `feat/tui` before P2 (list + connect only, editor disabled) or hold the whole PR?
-4. `import` scope: everything movable, or explicit `import <group|host>`?
-5. Group disable for hosts still in main: refuse with the import hint (recommended) or keep
-   the legacy path?
+## 7. Decisions (Adam, 2026-11-14)
+1. Command: `sshm setup` (not folded into `init`).
+2. Single managed file `~/.ssh/config.d/sshm.conf`, explicit Include line, no glob.
+3. `feat/tui` committed first with the editor disabled (`Model.editable`); re-enabled in P6.
+4. `import` moves everything movable (plain Host blocks, plus marker-disabled blocks with
+   their markers); DevPod, pattern/multi-pattern hosts and `Match` stay in main.
+5. Group disable/enable = **option A, refuse**: `groups disable <g>` fails if any member of
+   the group is not in the managed file; the error lists those hosts and suggests
+   `sshm import`. A group split across files is refused as a whole. `groups enable` on a
+   group whose disabled blocks are still in main refuses with the same hint (import moves
+   them, still disabled, with their markers). A group containing a non-movable host
+   (DevPod, ...) cannot be disabled; the error names the host. No second code path that
+   rewrites main. (Not chosen: B keep legacy path = lossy writer on main; C soft-disable =
+   raw `ssh <host>` still works.) Transitional rule: until P3 (`setup`) creates the managed
+   file, group disable keeps working on the main file exactly as today; the refuse-rule
+   activates once the managed file exists.
+
+Transitional write rule in P1: writes still go to the main file as today (hosts whose
+`SourceFile` is the main file stay editable); hosts that come from an *included* file are
+read-only with `host "x" is defined in <file> (included), which sshm cannot edit yet`.
+P3 replaces this with the managed-file rule.
 
 ## 8. Risks (ranked)
 1. Silent semantic loss when rewriting (repeated keys, `Port 22`, `Key=value`): mitigated by
