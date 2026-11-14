@@ -11,6 +11,9 @@ import (
 
 // AddForward validates and appends forward specs to a host's config block.
 func (a *App) AddForward(host string, kind domain.ForwardKind, specs []string) error {
+	if err := a.ensureInMain(host); err != nil {
+		return err
+	}
 	cfg, err := a.load()
 	if err != nil {
 		return err
@@ -47,22 +50,25 @@ func (a *App) AddForward(host string, kind domain.ForwardKind, specs []string) e
 // ListForwards returns a host's own config block (not merged with
 // inherited Host * forwards), for reading its saved forward entries.
 func (a *App) ListForwards(host string) (domain.Host, error) {
-	cfg, err := a.load()
+	l, err := a.loadAll()
 	if err != nil {
 		return domain.Host{}, err
 	}
 
-	idx := findHostIndex(cfg.Hosts, host)
+	idx := findHostIndex(l.Hosts, host)
 	if idx == -1 {
 		return domain.Host{}, fmt.Errorf("host %q not found", host)
 	}
 
-	return cfg.Hosts[idx], nil
+	return l.Hosts[idx], nil
 }
 
 // ClearForwards removes all forward entries (local, remote, and dynamic)
 // from a host's config block.
 func (a *App) ClearForwards(host string) error {
+	if err := a.ensureInMain(host); err != nil {
+		return err
+	}
 	cfg, err := a.load()
 	if err != nil {
 		return err
@@ -94,16 +100,23 @@ func (a *App) ClearForwards(host string) error {
 // Uses syscall.Exec so ssh gets direct control of the process. This
 // function only returns on error — on success the process is replaced.
 func (a *App) RunForward(host string, kind domain.ForwardKind, specs []string, save bool) error {
-	cfg, err := a.load()
+	// --save writes the host's block, so the write guard applies up front,
+	// before anything is exec'd. Without --save an included host is fine.
+	if save {
+		if err := a.ensureInMain(host); err != nil {
+			return err
+		}
+	}
+	l, err := a.loadAll()
 	if err != nil {
 		return err
 	}
 
-	if err := a.ensureNotDisabled(cfg, host); err != nil {
+	if err := a.ensureHostNotDisabled(l.Hosts, host); err != nil {
 		return err
 	}
 
-	if findHostIndex(cfg.Hosts, host) == -1 {
+	if findHostIndex(l.Hosts, host) == -1 {
 		return fmt.Errorf("host %q not found", host)
 	}
 

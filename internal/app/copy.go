@@ -31,11 +31,11 @@ func (a *App) Copy(src, dst, rsyncFlags string) error {
 	// Ad-hoc targets (not in config) are not gated. A config that cannot be
 	// loaded is an error — the gate fails closed.
 	if !isAdHoc {
-		cfg, err := a.load()
+		l, err := a.loadAll()
 		if err != nil {
 			return err
 		}
-		if err := a.ensureNotDisabled(cfg, hostFromPath(remote)); err != nil {
+		if err := a.ensureHostNotDisabled(l.Hosts, hostFromPath(remote)); err != nil {
 			return err
 		}
 	}
@@ -74,11 +74,11 @@ func (a *App) resolveRemote(src, dst string) (string, bool, error) {
 		if isRemotePath(path) {
 			hostPart := hostFromPath(path)
 			// Check if this host is in the config.
-			cfg, err := a.load()
+			l, err := a.loadAll()
 			if err != nil {
 				return "", false, err
 			}
-			idx := findHostIndex(cfg.Hosts, hostPart)
+			idx := findHostIndex(l.Hosts, hostPart)
 			if idx != -1 {
 				return path, false, nil
 			}

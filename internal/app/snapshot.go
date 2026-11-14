@@ -13,6 +13,9 @@ import (
 type HostEntry struct {
 	domain.Host
 	Gated bool
+	// Included is true when the host is defined only in files pulled in by
+	// Include, not in the main config file. sshm cannot edit those yet.
+	Included bool
 }
 
 // Snapshot is a consistent, read-only view of the config for presentation
@@ -27,7 +30,7 @@ type Snapshot struct {
 // Snapshot reads the config once and returns all hosts with their gate state
 // plus the file's validation issues.
 func (a *App) Snapshot() (Snapshot, error) {
-	cfg, err := a.load()
+	l, err := a.loadAll()
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -36,11 +39,15 @@ func (a *App) Snapshot() (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	snap := Snapshot{
-		Hosts:  make([]HostEntry, 0, len(cfg.Hosts)),
-		Issues: domain.Validate(cfg.Hosts),
+		Hosts:  make([]HostEntry, 0, len(l.Hosts)),
+		Issues: validateLoaded(l),
 	}
-	for _, h := range cfg.Hosts {
-		snap.Hosts = append(snap.Hosts, HostEntry{Host: h, Gated: isHostGated(h, state)})
+	for _, h := range l.Hosts {
+		snap.Hosts = append(snap.Hosts, HostEntry{
+			Host:     h,
+			Gated:    isHostGated(h, state),
+			Included: ensureInMainLoaded(l, h.Name) != nil,
+		})
 	}
 	return snap, nil
 }
@@ -55,11 +62,11 @@ func (a *App) CheckHostName(name string) error {
 	if strings.ContainsAny(name, " \t") {
 		return fmt.Errorf("host name %q must not contain whitespace", name)
 	}
-	cfg, err := a.load()
+	l, err := a.loadAll()
 	if err != nil {
 		return err
 	}
-	if findHostIndex(cfg.Hosts, name) != -1 {
+	if findHostIndex(l.Hosts, name) != -1 {
 		return fmt.Errorf("host %q already exists", name)
 	}
 	return nil
@@ -84,6 +91,9 @@ func (a *App) CheckNewHost(h domain.Host) ([]domain.Issue, error) {
 // changes (same semantics as EditHost). It writes nothing. It returns the
 // same refusal errors as EditHost (not found, disabled, DevPod-managed).
 func (a *App) CheckEdit(name string, changes map[string]string) ([]domain.Issue, error) {
+	if err := a.ensureInMain(name); err != nil {
+		return nil, err
+	}
 	cfg, err := a.load()
 	if err != nil {
 		return nil, err

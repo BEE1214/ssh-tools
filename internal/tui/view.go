@@ -132,6 +132,9 @@ func (m Model) rowLine(r row, nameW, connW int, selected bool) string {
 	if r.readOnly() {
 		tags = append(tags, "[read-only]")
 	}
+	if r.included {
+		tags = append(tags, "[included]")
+	}
 	if m.filter.Value() != "" && !r.gated {
 		// Flat list: show which group each match belongs to.
 		tags = append(tags, "("+groupLabel(h)+")")
@@ -243,7 +246,7 @@ var helpLines = []string{
 	"  q / esc      quit",
 	"",
 	"Editor: tab/shift+tab fields, enter on last field or ctrl+s saves, esc cancels.",
-	"Hosts marked [read-only] (DevPod) or [disabled] cannot be edited or deleted.",
+	"Hosts marked [read-only] (DevPod), [included] or [disabled] cannot be edited or deleted.",
 	"",
 	"press any key to close",
 }

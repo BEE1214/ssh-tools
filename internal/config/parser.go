@@ -13,6 +13,11 @@ type ConfigFile struct {
 	Hosts    []domain.Host
 	Comments []CommentBlock // standalone comments/blank lines preserved between hosts
 	Raw      []byte         // original file bytes
+
+	// Includes lists the Include directives found in the file, in line
+	// order. Read-only metadata for Load: Write ignores it (Include lines
+	// are still preserved as ordinary comment/option text).
+	Includes []IncludeDirective
 }
 
 // RawTextLines returns the raw file split into lines (no trailing newline
@@ -155,6 +160,14 @@ func Parse(raw []byte) (*ConfigFile, error) {
 		if inDisabledBlock {
 			disabledRaw = append(disabledRaw, raw)
 			continue
+		}
+
+		// Include directive: recorded for Load, then handled like any other
+		// line below (outside a block it is kept as comment text, inside a
+		// block it is an unmodeled option) so Write output is unchanged.
+		// Lines inside disabled-group markers never reach this point.
+		if pats, ok := parseIncludeLine(trimmed); ok {
+			cfg.Includes = append(cfg.Includes, IncludeDirective{Line: lineNum, Patterns: pats})
 		}
 
 		// Host line: starts a new host block

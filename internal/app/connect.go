@@ -19,24 +19,24 @@ import (
 // Uses syscall.Exec so ssh gets direct control of stdin/stdout/stderr/tty.
 // This function only returns on error — on success the process is replaced.
 func (a *App) Connect(name string, extraArgs []string) error {
-	cfg, err := a.load()
+	l, err := a.loadAll()
 	if err != nil {
 		return err
 	}
 
 	// Gate: refuse hosts whose group is disabled (commented out of config).
-	if err := a.ensureNotDisabled(cfg, name); err != nil {
+	if err := a.ensureHostNotDisabled(l.Hosts, name); err != nil {
 		return err
 	}
 
-	idx := findHostIndex(cfg.Hosts, name)
+	idx := findHostIndex(l.Hosts, name)
 	if idx == -1 {
 		// Not in config — check for user@hostname pattern for ad-hoc connect.
 		if strings.Contains(name, "@") {
 			return a.connectAdHoc(name, extraArgs)
 		}
 		// Try fuzzy suggestion
-		suggestion := suggestHost(cfg.Hosts, name)
+		suggestion := suggestHost(l.Hosts, name)
 		if suggestion != "" {
 			return fmt.Errorf("host %q not found — did you mean %q?", name, suggestion)
 		}

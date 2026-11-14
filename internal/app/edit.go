@@ -10,6 +10,10 @@ import (
 // AddHost adds a new host to the config file.
 // Returns an error if a host with the same name already exists.
 func (a *App) AddHost(h domain.Host) error {
+	// The name must not exist in ANY loaded file, not only the main one.
+	if err := a.ensureInMain(h.Name); err != nil {
+		return err
+	}
 	cfg, err := a.load()
 	if err != nil {
 		return err
@@ -34,6 +38,9 @@ func (a *App) AddHost(h domain.Host) error {
 // hostname, user, port, identityfile, proxyjump, proxycommand,
 // forwardagent, forwardx11, stricthostkeychecking, loglevel
 func (a *App) EditHost(name string, changes map[string]string) error {
+	if err := a.ensureInMain(name); err != nil {
+		return err
+	}
 	cfg, err := a.load()
 	if err != nil {
 		return err
@@ -61,6 +68,9 @@ func (a *App) EditHost(name string, changes map[string]string) error {
 
 // DeleteHost removes a host from the config file.
 func (a *App) DeleteHost(name string) error {
+	if err := a.ensureInMain(name); err != nil {
+		return err
+	}
 	cfg, err := a.load()
 	if err != nil {
 		return err
@@ -81,6 +91,12 @@ func (a *App) DeleteHost(name string) error {
 
 // DuplicateHost creates a copy of an existing host with a new name.
 func (a *App) DuplicateHost(srcName, newName string) error {
+	if err := a.ensureInMain(srcName); err != nil {
+		return err
+	}
+	if err := a.ensureInMain(newName); err != nil {
+		return err
+	}
 	cfg, err := a.load()
 	if err != nil {
 		return err

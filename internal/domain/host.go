@@ -36,11 +36,11 @@ type Host struct {
 	LogLevel              string
 
 	// Algorithm options.
-	HostKeyAlgorithms    string
-	KexAlgorithms        string
+	HostKeyAlgorithms        string
+	KexAlgorithms            string
 	PubkeyAcceptedAlgorithms string
-	Ciphers              string
-	MACs                 string
+	Ciphers                  string
+	MACs                     string
 
 	// Extra holds any SSH option not modeled above.
 	// Key is the canonical (canonical-cased) option name.
@@ -76,6 +76,11 @@ type Host struct {
 
 	// Source indicates how this block was created.
 	Source HostSource
+
+	// SourceFile is the absolute path of the config file this block was read
+	// from. Set by config.Load for every host (main file and included files);
+	// empty for hosts built in memory or parsed without Load.
+	SourceFile string
 
 	// LineStart is the 1-indexed line number of the "Host" line in the original file.
 	// LineEnd is the 1-indexed line number of the last key-value line (or the Host line

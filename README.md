@@ -52,7 +52,7 @@ sshm list --group mygroup    # filter by group
 sshm search <pattern>        # search host names and hostnames
 sshm add --name foo --hostname 10.0.0.1 --user root --port 22 --identity ~/.ssh/id_ed25519
 sshm edit <hostname> --user root --port 20008
-sshm dump <hostname>         # effective config (like ssh -G)
+sshm dump <hostname>         # effective config (like ssh -G: first match wins)
 sshm validate                # lint config, report issues
 sshm groups                  # list groups + enable/disable state
 sshm groups disable <group>  # disable a group (hard gate, see below)
@@ -168,15 +168,17 @@ The writer uses atomic writes (temp file + fsync + rename) and creates a timesta
 
 ## Host * defaults (`sshm init`)
 
-Generates or repairs a `Host *` block with:
+Generates or repairs a `Host *` block. A new block is appended as the **last** host block: ssh uses the first value found for each option, so a catch-all `Host *` only supplies defaults when it comes after your specific hosts (a leading `Host *` would override every per-host value). An existing `Host *` block is updated in place, not moved; if other hosts follow it, `sshm init` prints a note on stderr saying its values override theirs and that you should move it to the end. The block contains:
 
 - ServerAliveInterval 60, ServerAliveCountMax 3
 - IdentitiesOnly yes, HashKnownHosts yes
 - StrictHostKeyChecking accept-new
-- Post-quantum KEX (mlkem768x25519-sha256, sntrup761x25519-sha512)
+- Post-quantum KEX (mlkem768x25519-sha256, sntrup761x25519-sha512) and curve25519
 - Strong host key algorithms (ssh-ed25519, rsa-sha2-512, rsa-sha2-256)
 - chacha20-poly1305, AES-GCM ciphers
 - HMAC-SHA2-256/512 ETM MACs
+
+The algorithm lists are **filtered through what your ssh supports** (`ssh -Q kex|cipher|mac|key-sig`): preferred names your ssh does not know are dropped, because ssh refuses to run at all with one unknown algorithm name in the config. If `ssh -Q` is unavailable (or nothing from a list is supported), that option is left out and OpenSSH's defaults apply. `sshm validate` reports any algorithm name in your config that your ssh does not know (`bad-algorithm`).
 
 ## Project structure
 

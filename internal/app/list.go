@@ -5,10 +5,11 @@ import (
 )
 
 // ListHosts returns all hosts, optionally filtered by group. Disabled hosts
-// are excluded unless includeDisabled is set.
+// are excluded unless includeDisabled is set. Hosts from files pulled in by
+// Include are part of the result.
 // If group is empty, all hosts are returned.
 func (a *App) ListHosts(group string, includeDisabled bool) ([]domain.Host, error) {
-	cfg, err := a.load()
+	l, err := a.loadAll()
 	if err != nil {
 		return nil, err
 	}
@@ -21,7 +22,7 @@ func (a *App) ListHosts(group string, includeDisabled bool) ([]domain.Host, erro
 	}
 
 	var filtered []domain.Host
-	for _, h := range cfg.Hosts {
+	for _, h := range l.Hosts {
 		if !includeDisabled && isHostGated(h, state) {
 			continue
 		}
@@ -34,18 +35,18 @@ func (a *App) ListHosts(group string, includeDisabled bool) ([]domain.Host, erro
 
 // ListGroups returns a map of group name to hosts in that group.
 func (a *App) ListGroups() (map[string][]domain.Host, error) {
-	cfg, err := a.load()
+	l, err := a.loadAll()
 	if err != nil {
 		return nil, err
 	}
-	return domain.GroupHosts(cfg.Hosts), nil
+	return domain.GroupHosts(l.Hosts), nil
 }
 
 // HostNamesForCompletion returns host names matching the query, for shell
 // completion. Uses fuzzy matching when query is non-empty, alphabetical
 // when empty. Excludes wildcard hosts.
 func (a *App) HostNamesForCompletion(query string) ([]string, error) {
-	cfg, err := a.load()
+	l, err := a.loadAll()
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +58,7 @@ func (a *App) HostNamesForCompletion(query string) ([]string, error) {
 
 	// Exclude wildcard hosts and hosts in disabled groups from completion.
 	var hosts []domain.Host
-	for _, h := range cfg.Hosts {
+	for _, h := range l.Hosts {
 		if h.IsWildcard() || isHostGated(h, state) {
 			continue
 		}

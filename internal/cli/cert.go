@@ -113,7 +113,7 @@ func newCertListCmd() *cobra.Command {
 
 			fmt.Printf("%-30s %-15s %-20s %-25s %s\n", "IDENTITY", "SERIAL", "PRINCIPALS", "EXPIRES", "PATH")
 			for _, c := range certs {
-				expiry := c.ValidBefore.Format("2006-01-02 15:04:05")
+				expiry := c.Expires()
 				if c.IsExpired() {
 					expiry = "EXPIRED " + expiry
 				}
@@ -157,6 +157,8 @@ func newCertInspectCmd() *cobra.Command {
 			fmt.Printf("Validity:       %s\n", cert.Validity())
 			if cert.IsExpired() {
 				fmt.Printf("Status:         EXPIRED\n")
+			} else if cert.NeverExpires() {
+				fmt.Printf("Status:         valid (never expires)\n")
 			} else {
 				remaining := time.Until(cert.ValidBefore).Round(time.Minute)
 				fmt.Printf("Status:         valid (expires in %s)\n", remaining)

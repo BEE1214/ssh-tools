@@ -13,6 +13,11 @@ type row struct {
 
 	host  domain.Host
 	gated bool // host is in a disabled group: not connectable/editable
+
+	// included: the host is defined only in a file pulled in by Include.
+	// Connectable, but not editable/deletable/duplicable (sshm only writes
+	// the main file).
+	included bool
 }
 
 // key identifies a row across rebuilds so the cursor can follow it.
@@ -57,9 +62,15 @@ func (m Model) visibleHosts() []domain.Host {
 func (m Model) buildRows() []row {
 	hosts := m.visibleHosts()
 	gated := map[string]bool{}
+	included := map[string]bool{}
 	for _, e := range m.hosts {
 		if e.Gated {
 			gated[e.Name] = true
+		}
+		if prev, seen := included[e.Name]; seen {
+			included[e.Name] = prev && e.Included
+		} else {
+			included[e.Name] = e.Included
 		}
 	}
 
@@ -72,7 +83,7 @@ func (m Model) buildRows() []row {
 			}
 		}
 		for _, name := range domain.FuzzyMatch(hosts, q) {
-			rows = append(rows, row{host: byName[name], gated: gated[name]})
+			rows = append(rows, row{host: byName[name], gated: gated[name], included: included[name]})
 		}
 		return rows
 	}
@@ -85,7 +96,7 @@ func (m Model) buildRows() []row {
 			continue
 		}
 		for _, h := range groups[g] {
-			rows = append(rows, row{group: g, host: h, gated: gated[h.Name]})
+			rows = append(rows, row{group: g, host: h, gated: gated[h.Name], included: included[h.Name]})
 		}
 	}
 	return rows
