@@ -64,6 +64,9 @@ func ParseForwardSpec(kind ForwardKind, spec string) (string, error) {
 		if !isValidListenSpec(spec) {
 			return "", fmt.Errorf("invalid forward spec %q: expected [bindAddr:]port", spec)
 		}
+		if err := checkBindAddr(spec, spec); err != nil {
+			return "", err
+		}
 		return spec, nil
 	}
 
@@ -89,6 +92,12 @@ func ParseForwardSpec(kind ForwardKind, spec string) (string, error) {
 	}
 	if !isValidPort(targetPort) {
 		return "", fmt.Errorf("invalid forward spec %q: invalid target port %q", spec, targetPort)
+	}
+	if err := checkBindAddr(spec, listenSpec); err != nil {
+		return "", err
+	}
+	if !isSafeForwardHost(targetHost, false) {
+		return "", fmt.Errorf("invalid forward spec %q: invalid target host %q", spec, targetHost)
 	}
 
 	return listenSpec + " " + targetHost + ":" + targetPort, nil
@@ -130,6 +139,40 @@ func ListenPort(kind ForwardKind, entry string) string {
 		return spec[i+1:]
 	}
 	return spec
+}
+
+// checkBindAddr validates the optional bindAddr part of a listen spec
+// ("[bindAddr:]port"); spec is used for the error message only.
+func checkBindAddr(spec, listenSpec string) error {
+	i := strings.LastIndex(listenSpec, ":")
+	if i == -1 {
+		return nil
+	}
+	if bind := listenSpec[:i]; !isSafeForwardHost(bind, true) {
+		return fmt.Errorf("invalid forward spec %q: invalid bind address %q", spec, bind)
+	}
+	return nil
+}
+
+// isSafeForwardHost reports whether s is a conservative host/address token
+// for a forward spec: non-empty, no leading '-', and only [A-Za-z0-9._:-]
+// (so no whitespace, control characters or line breaks that could inject
+// extra ssh_config lines or ssh options). allowBind additionally permits the
+// bracket and wildcard characters used in bind addresses ("[::1]", "*").
+func isSafeForwardHost(s string, allowBind bool) bool {
+	if s == "" || s[0] == '-' {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.', r == '_', r == ':', r == '-':
+		case allowBind && (r == '[' || r == ']' || r == '*'):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // isValidListenSpec reports whether s is "port" or "bindAddr:port" with a

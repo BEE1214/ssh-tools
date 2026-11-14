@@ -19,6 +19,14 @@ import (
 func Write(cfg *ConfigFile) ([]byte, error) {
 	var buf strings.Builder
 
+	// Refuse values that would break out of their config line and inject
+	// extra directives.
+	for _, h := range cfg.Hosts {
+		if err := checkLineBreaks(h); err != nil {
+			return nil, err
+		}
+	}
+
 	// Write leading comments (before any host block).
 	for _, c := range cfg.Comments {
 		buf.WriteString(c.Text)
@@ -77,6 +85,33 @@ func Write(cfg *ConfigFile) ([]byte, error) {
 	}
 
 	return []byte(result), nil
+}
+
+// checkLineBreaks returns an error if any value the writer would emit for h
+// contains a CR or LF. A disabled host with a verbatim RawBlock is written
+// from that block, not from its fields, so its fields are not checked.
+func checkLineBreaks(h domain.Host) error {
+	if h.Disabled && h.RawBlock != "" {
+		return nil
+	}
+	values := []string{
+		h.Name, h.Group, h.HostName, h.User, h.Port, h.IdentityFile, h.CertificateFile,
+		h.ProxyJump, h.ProxyCommand, h.ForwardAgent, h.ForwardX11,
+		h.StrictHostKeyChecking, h.LogLevel, h.HostKeyAlgorithms, h.KexAlgorithms,
+		h.PubkeyAcceptedAlgorithms, h.Ciphers, h.MACs,
+	}
+	values = append(values, h.LocalForwards...)
+	values = append(values, h.RemoteForwards...)
+	values = append(values, h.DynamicForwards...)
+	for k, v := range h.Extra {
+		values = append(values, k, v)
+	}
+	for _, v := range values {
+		if strings.ContainsAny(v, "\r\n") {
+			return fmt.Errorf("host %q: value %q contains a line break; refusing to write it to the config", h.Name, v)
+		}
+	}
+	return nil
 }
 
 // writeHostBlock writes a single non-DevPod host block.

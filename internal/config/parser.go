@@ -54,6 +54,7 @@ func Parse(raw []byte) (*ConfigFile, error) {
 	var inDisabledBlock bool
 	var disabledGroup string
 	var disabledRaw []string
+	var disabledStart int
 	commentStart := 0
 	lineNum := 0
 
@@ -95,17 +96,21 @@ func Parse(raw []byte) (*ConfigFile, error) {
 		// Disabled group markers: "# sshm disabled group=<name> start/end".
 		// Lines between markers belong to disabled host blocks and are not
 		// comments — the writer re-emits them verbatim on enable.
-		if name, ok := domain.IsDisabledMarkerStart(trimmed); ok {
+		//
+		// Markers are only honored in well-formed positions: a start marker
+		// outside any host block and outside another disabled block, an end
+		// marker that closes the open block of the same group. Anything else
+		// is an ordinary comment (or a raw line of the open disabled block),
+		// so a stray marker can never swallow hosts.
+		if name, ok := domain.IsDisabledMarkerStart(trimmed); ok && !inDisabledBlock && currentHost == nil {
 			flushComment()
-			flushHost()
 			disabledGroup = name
+			disabledStart = lineNum
 			inDisabledBlock = true
 			commentLines = nil
 			continue
 		}
-		if _, ok := domain.IsDisabledMarkerEnd(trimmed); ok {
-			flushComment()
-			flushHost()
+		if name, ok := domain.IsDisabledMarkerEnd(trimmed); ok && inDisabledBlock && name == disabledGroup {
 			appendDisabledHosts(cfg, disabledGroup, disabledRaw)
 			inDisabledBlock = false
 			disabledGroup = ""
@@ -227,6 +232,13 @@ func Parse(raw []byte) (*ConfigFile, error) {
 
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scan error: %w", err)
+	}
+
+	// An unterminated disabled block would swallow every following host and
+	// a later save would delete them — fail loudly instead.
+	if inDisabledBlock {
+		return nil, fmt.Errorf("unterminated disabled group block %q: start marker at line %d has no matching end marker",
+			disabledGroup, disabledStart)
 	}
 
 	return cfg, nil

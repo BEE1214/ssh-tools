@@ -273,16 +273,29 @@ func isHostDisabled(h domain.Host) bool {
 	return h.Disabled && !h.IsWildcard()
 }
 
-// ensureNotDisabled returns an error if the named host's group is disabled.
-// errNil is returned when the host is not in the config (ad-hoc targets are
-// never gated).
+// isHostGated reports whether a host must be refused/hidden: it is commented
+// out of the config, or its group is recorded as disabled in the sidecar
+// state file (covers hosts added to a group after it was disabled).
+// Wildcard/defaults blocks are never gated.
+func isHostGated(h domain.Host, state map[string]bool) bool {
+	return !h.IsWildcard() && (h.Disabled || state[h.Group])
+}
+
+// ensureNotDisabled returns an error if the named host's group is disabled
+// (commented out of the config or recorded in the state file). nil is
+// returned when the host is not in the config (ad-hoc targets are never
+// gated). An unreadable state file is an error: the gate fails closed.
 func (a *App) ensureNotDisabled(cfg *config.ConfigFile, name string) error {
 	idx := findHostIndex(cfg.Hosts, name)
 	if idx == -1 {
 		return nil
 	}
+	state, err := a.readGroupState()
+	if err != nil {
+		return err
+	}
 	h := cfg.Hosts[idx]
-	if isHostDisabled(h) {
+	if isHostGated(h, state) {
 		return fmt.Errorf(
 			"host %q is in disabled group %q — run 'sshm groups enable %s' to re-enable it",
 			name, h.Group, h.Group)

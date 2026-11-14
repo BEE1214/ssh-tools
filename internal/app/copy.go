@@ -19,18 +19,24 @@ import (
 // (ssh config provides the identity). If it's an ad-hoc user@host, the
 // default identity key is passed via -e "ssh -i <key>".
 func (a *App) Copy(src, dst, rsyncFlags string) error {
-	remote, isAdHoc := a.resolveRemote(src, dst)
+	remote, isAdHoc, err := a.resolveRemote(src, dst)
+	if err != nil {
+		return err
+	}
 	if remote == "" {
 		return fmt.Errorf("neither source nor destination is a remote path — expected host:path or user@host:path")
 	}
 
 	// Gate: refuse remote targets whose host belongs to a disabled group.
-	// Ad-hoc targets (not in config) are not gated.
-	if cfg, err := a.load(); err == nil {
-		if !isAdHoc {
-			if err := a.ensureNotDisabled(cfg, hostFromPath(remote)); err != nil {
-				return err
-			}
+	// Ad-hoc targets (not in config) are not gated. A config that cannot be
+	// loaded is an error — the gate fails closed.
+	if !isAdHoc {
+		cfg, err := a.load()
+		if err != nil {
+			return err
+		}
+		if err := a.ensureNotDisabled(cfg, hostFromPath(remote)); err != nil {
+			return err
 		}
 	}
 
@@ -61,25 +67,25 @@ func (a *App) Copy(src, dst, rsyncFlags string) error {
 
 // resolveRemote examines src and dst to find the remote target.
 // Returns the remote string and a bool indicating whether it's ad-hoc
-// (not in ssh config). Returns ("", false) if no remote path is found.
-func (a *App) resolveRemote(src, dst string) (string, bool) {
+// (not in ssh config). Returns ("", false, nil) if no remote path is found.
+// A config that cannot be loaded is an error (never silently ad-hoc).
+func (a *App) resolveRemote(src, dst string) (string, bool, error) {
 	for _, path := range []string{src, dst} {
 		if isRemotePath(path) {
 			hostPart := hostFromPath(path)
 			// Check if this host is in the config.
 			cfg, err := a.load()
 			if err != nil {
-				// Can't load config — treat as ad-hoc if it has user@host.
-				return path, strings.Contains(hostPart, "@")
+				return "", false, err
 			}
 			idx := findHostIndex(cfg.Hosts, hostPart)
 			if idx != -1 {
-				return path, false
+				return path, false, nil
 			}
-			return path, strings.Contains(hostPart, "@")
+			return path, strings.Contains(hostPart, "@"), nil
 		}
 	}
-	return "", false
+	return "", false, nil
 }
 
 // isRemotePath returns true if the path contains a colon separating

@@ -128,6 +128,9 @@ func (a *App) SignCert(opts SignOpts) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("load config: %w", err)
 		}
+		if err := a.ensureNotDisabled(cfg, opts.HostName); err != nil {
+			return "", err
+		}
 		idx := findHostIndex(cfg.Hosts, opts.HostName)
 		if idx == -1 {
 			return "", fmt.Errorf("host %q not found in config", opts.HostName)
@@ -302,6 +305,9 @@ func (a *App) ClearCertificateFile(name string) error {
 	idx := findHostIndex(cfg.Hosts, name)
 	if idx == -1 {
 		return nil // host not found, nothing to clear
+	}
+	if err := ensureEditable(cfg.Hosts[idx]); err != nil {
+		return err
 	}
 
 	cfg.Hosts[idx].CertificateFile = ""

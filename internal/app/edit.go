@@ -45,6 +45,9 @@ func (a *App) EditHost(name string, changes map[string]string) error {
 	}
 
 	h := &cfg.Hosts[idx]
+	if err := ensureEditable(*h); err != nil {
+		return err
+	}
 	if h.Source == domain.SourceDevPod {
 		return fmt.Errorf("host %q is managed by DevPod — edit via DevPod instead", name)
 	}
@@ -87,6 +90,9 @@ func (a *App) DuplicateHost(srcName, newName string) error {
 	if idx == -1 {
 		return fmt.Errorf("source host %q not found", srcName)
 	}
+	if err := ensureEditable(cfg.Hosts[idx]); err != nil {
+		return err
+	}
 
 	if findHostIndex(cfg.Hosts, newName) != -1 {
 		return fmt.Errorf("host %q already exists", newName)
@@ -101,6 +107,18 @@ func (a *App) DuplicateHost(srcName, newName string) error {
 
 	cfg.Hosts = append(cfg.Hosts, dup)
 	return a.save(cfg)
+}
+
+// ensureEditable rejects modifications of a host that is commented out of the
+// config (disabled group). The writer re-emits a disabled host's verbatim
+// block, so any field change would be silently lost.
+func ensureEditable(h domain.Host) error {
+	if isHostDisabled(h) {
+		return fmt.Errorf(
+			"host %q is in disabled group %q — run 'sshm groups enable %s' first",
+			h.Name, h.Group, h.Group)
+	}
+	return nil
 }
 
 // applyChange sets a field on the host based on a key name (case-insensitive).
