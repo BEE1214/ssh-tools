@@ -57,6 +57,11 @@ func reportDoctor(issues []domain.Issue, strict bool) error {
 			warns++
 		}
 	}
+	// Info findings are listed but neither counted nor summarized (5.1): with
+	// only info lines there is no summary line and the exit status is 0.
+	if errs+warns == 0 {
+		return nil
+	}
 	summary := fmt.Sprintf("%d error(s), %d warning(s) found.", errs, warns)
 	fmt.Fprintln(os.Stderr, summary)
 	if errs > 0 || (strict && warns > 0) {
