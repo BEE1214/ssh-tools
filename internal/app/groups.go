@@ -91,7 +91,7 @@ func writeGroupState(path string, state map[string]bool) error {
 // ListGroupsState returns group states sorted by name: every group that has
 // hosts, plus disabled groups (whose only visible hosts are disabled ones).
 func (a *App) ListGroupsState() ([]groupState, error) {
-	cfg, err := a.load()
+	l, err := a.loadAll()
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +100,7 @@ func (a *App) ListGroupsState() ([]groupState, error) {
 		return nil, err
 	}
 
-	byGroup := domain.GroupHosts(cfg.Hosts)
+	byGroup := domain.GroupHosts(l.Hosts)
 	names := domain.GroupNames(byGroup)
 
 	result := make([]groupState, 0, len(names)+len(disabledSet))
@@ -140,12 +140,37 @@ func disabledNames(hosts []domain.Host) []string {
 	return names
 }
 
+// ensureGroupInMain is the group form of the transitional write guard: group
+// disable/enable rewrites the main file, so it refuses when any member of the
+// group is defined in an included file (a group split across files would end
+// up half disabled). action is "disable" or "enable", used in the message.
+func (a *App) ensureGroupInMain(action, group string) error {
+	l, err := a.loadAll()
+	if err != nil {
+		return err
+	}
+	var parts []string
+	for _, h := range l.Hosts {
+		if h.Group != group || h.IsWildcard() || h.SourceFile == l.MainPath() {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("host %q is defined in %s (included)", h.Name, h.SourceFile))
+	}
+	if len(parts) > 0 {
+		return fmt.Errorf("cannot %s group %q: %s, which sshm cannot edit yet", action, group, strings.Join(parts, ", "))
+	}
+	return nil
+}
+
 // DisableGroup disables a group: host blocks are commented out of the ssh
 // config (under marker comments) and the group is recorded in the sidecar
 // state file. After this, raw `ssh <host>` fails to resolve and sshm
 // connect/copy refuse the group's hosts.
 func (a *App) DisableGroup(group string) error {
 	if err := domain.ValidateGroupName(group); err != nil {
+		return err
+	}
+	if err := a.ensureGroupInMain("disable", group); err != nil {
 		return err
 	}
 	cfg, err := a.load()
@@ -206,6 +231,9 @@ func (a *App) EnableGroup(group string) error {
 	if err := domain.ValidateGroupName(group); err != nil {
 		return err
 	}
+	if err := a.ensureGroupInMain("enable", group); err != nil {
+		return err
+	}
 	cfg, err := a.load()
 	if err != nil {
 		return err
@@ -242,7 +270,7 @@ func (a *App) EnableGroup(group string) error {
 // listed in the sidecar state file, or has disabled hosts and no enabled
 // hosts in the config.
 func (a *App) IsGroupDisabled(group string) (bool, error) {
-	cfg, err := a.load()
+	l, err := a.loadAll()
 	if err != nil {
 		return false, err
 	}
@@ -254,7 +282,7 @@ func (a *App) IsGroupDisabled(group string) (bool, error) {
 		return true, nil
 	}
 	enabled, disabled := 0, 0
-	for _, h := range cfg.Hosts {
+	for _, h := range l.Hosts {
 		if h.Group != group || h.IsWildcard() {
 			continue
 		}
@@ -286,7 +314,13 @@ func isHostGated(h domain.Host, state map[string]bool) bool {
 // returned when the host is not in the config (ad-hoc targets are never
 // gated). An unreadable state file is an error: the gate fails closed.
 func (a *App) ensureNotDisabled(cfg *config.ConfigFile, name string) error {
-	idx := findHostIndex(cfg.Hosts, name)
+	return a.ensureHostNotDisabled(cfg.Hosts, name)
+}
+
+// ensureHostNotDisabled is ensureNotDisabled over a host list, so read paths
+// can gate against the merged (Include-following) view.
+func (a *App) ensureHostNotDisabled(hosts []domain.Host, name string) error {
+	idx := findHostIndex(hosts, name)
 	if idx == -1 {
 		return nil
 	}
@@ -294,7 +328,7 @@ func (a *App) ensureNotDisabled(cfg *config.ConfigFile, name string) error {
 	if err != nil {
 		return err
 	}
-	h := cfg.Hosts[idx]
+	h := hosts[idx]
 	if isHostGated(h, state) {
 		return fmt.Errorf(
 			"host %q is in disabled group %q — run 'sshm groups enable %s' to re-enable it",

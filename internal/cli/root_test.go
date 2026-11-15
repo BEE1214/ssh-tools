@@ -1,6 +1,34 @@
 package cli
 
-import "testing"
+import (
+	"io"
+	"strings"
+	"testing"
+)
+
+// TestNoArgsWithoutTTY: bare `sshm` must refuse to launch the TUI when
+// stdin/stdout is not a terminal, with a clear error (not the old
+// "not yet implemented" text).
+func TestNoArgsWithoutTTY(t *testing.T) {
+	old := stdioIsTerminal
+	stdioIsTerminal = func() bool { return false }
+	t.Cleanup(func() { stdioIsTerminal = old })
+
+	root := NewRootCmd()
+	root.SetArgs(nil)
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected an error without a TTY")
+	}
+	if err.Error() != "sshm: no TTY; use 'sshm list'" {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if strings.Contains(err.Error(), "not yet implemented") {
+		t.Error("stale 'not yet implemented' message")
+	}
+}
 
 // TestGroupsCommandsNotOnRoot: disable/enable live under `groups` only; a
 // duplicate top-level registration would create `sshm disable` / `sshm enable`.

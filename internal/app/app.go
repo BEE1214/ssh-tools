@@ -71,3 +71,42 @@ func findHostIndex(hosts []domain.Host, name string) int {
 	}
 	return -1
 }
+
+// loadAll reads the main config file and every file reachable from it through
+// Include. Use it for READ paths only: the result is a different type from
+// *config.ConfigFile, so merged hosts cannot be passed to save.
+func (a *App) loadAll() (*config.Loaded, error) {
+	return config.Load(a.configPath)
+}
+
+// ensureInMain is the transitional write guard: sshm only writes the main
+// config file, so a host that is defined only in an included file cannot be
+// edited, deleted, duplicated or extended. A name that is also defined in the
+// main file passes (the write targets the main file's block, as before).
+// Unknown names pass too; callers report "not found" themselves.
+func (a *App) ensureInMain(name string) error {
+	l, err := a.loadAll()
+	if err != nil {
+		return err
+	}
+	return ensureInMainLoaded(l, name)
+}
+
+func ensureInMainLoaded(l *config.Loaded, name string) error {
+	other := ""
+	for _, h := range l.Hosts {
+		if h.Name != name {
+			continue
+		}
+		if h.SourceFile == l.MainPath() {
+			return nil
+		}
+		if other == "" {
+			other = h.SourceFile
+		}
+	}
+	if other != "" {
+		return fmt.Errorf("host %q is defined in %s (included), which sshm cannot edit yet", name, other)
+	}
+	return nil
+}
