@@ -82,6 +82,9 @@ Examples:
 				return err
 			}
 			fmt.Fprintf(os.Stderr, "Certificate created: %s\n", certPath)
+			if opts.HostName != "" {
+				printHint(a)
+			}
 			return nil
 		},
 	}

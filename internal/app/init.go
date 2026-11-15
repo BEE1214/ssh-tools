@@ -13,7 +13,28 @@ import (
 // when it comes after the specific hosts. An existing Host * block is
 // replaced in place and never moved; if other hosts follow it (in file order,
 // included files inlined), the returned note says its values override theirs.
+//
+// In managed mode (PLAN-p3-p4.md R11) a new block is appended to the END of the
+// main file only when no Host * exists in any loaded file; an existing one is
+// never rewritten, and note says where it is.
 func (a *App) InitDefaults() (note string, err error) {
+	_, note, err = a.InitDefaultsReport()
+	return note, err
+}
+
+// InitDefaultsReport is InitDefaults that also says whether a block was
+// written (false: managed mode found an existing Host *, see note).
+func (a *App) InitDefaultsReport() (written bool, note string, err error) {
+	if v, err := a.activeView(); err != nil {
+		return false, "", err
+	} else if v != nil {
+		return a.initManaged(v)
+	}
+	note, err = a.initLegacy()
+	return err == nil, note, err
+}
+
+func (a *App) initLegacy() (note string, err error) {
 	cfg, err := a.load()
 	if err != nil {
 		return "", err

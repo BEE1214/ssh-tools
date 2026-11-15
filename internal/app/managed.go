@@ -209,7 +209,55 @@ func (a *App) saveManagedDoc(path string, d *config.Doc, v verifyPlan) (note str
 		return "", fmt.Errorf("not writing %s: %w", path, err)
 	}
 	defer unlock()
-	return a.saveManagedLocked(path, d, v)
+	return a.saveDocLocked(kindManaged, path, d, v)
+}
+
+// docKind says which file a Doc stands for, because the two are saved with the
+// same safety net but differ in the details.
+type docKind int
+
+const (
+	// kindManaged: sshm.conf. Written through Doc.Bytes with mode forced to
+	// 0600; ssh must reach it through an unconditional Include.
+	kindManaged docKind = iota
+	// kindMain: the hand-owned ssh config (init's Host * block). Written through
+	// Doc.RawBytes, so no byte but the appended lines changes, with the mode of
+	// the file (and symlinks) kept.
+	kindMain
+)
+
+// saveMainDoc saves a raw edit of the main config file d (a Doc of the main
+// file) with the verification of saveManagedDoc: lock, lost-update check,
+// backup, atomic write, ssh -G before and after under the plan v, rollback.
+func (a *App) saveMainDoc(d *config.Doc, v verifyPlan) (note string, err error) {
+	path := a.configPath
+	lock, err := managedLockPath(path)
+	if err != nil {
+		return "", fmt.Errorf("not writing %s: %w", path, err)
+	}
+	unlock, err := config.LockFile(lock, managedLockTimeout)
+	if err != nil {
+		return "", fmt.Errorf("not writing %s: %w", path, err)
+	}
+	defer unlock()
+	return a.saveDocLocked(kindMain, path, d, v)
+}
+
+// docBytes is what a save of d writes.
+func docBytes(kind docKind, d *config.Doc) []byte {
+	if kind == kindMain {
+		return d.RawBytes()
+	}
+	return d.Bytes()
+}
+
+// writeDoc writes data to path atomically (through a symlink). The managed
+// file gets exactly mode; the main file keeps the mode it has.
+func writeDoc(kind docKind, path string, data []byte, mode os.FileMode) error {
+	if kind == kindMain {
+		return config.AtomicWrite(path, data)
+	}
+	return config.AtomicWriteMode(path, data, mode)
 }
 
 // managedLockPath returns the lock file for the managed file at path. It
@@ -243,8 +291,8 @@ func readState(target string) (data []byte, exists bool, err error) {
 	return nil, false, err
 }
 
-func (a *App) saveManagedLocked(path string, d *config.Doc, v verifyPlan) (note string, err error) {
-	data := d.Bytes()
+func (a *App) saveDocLocked(kind docKind, path string, d *config.Doc, v verifyPlan) (note string, err error) {
+	data := docBytes(kind, d)
 	target, err := config.WriteTarget(path)
 	if err != nil {
 		return "", err
@@ -296,10 +344,13 @@ func (a *App) saveManagedLocked(path string, d *config.Doc, v verifyPlan) (note 
 	if err := trustLoaded(l); err != nil {
 		return "", fmt.Errorf("not writing %s: %w", path, err)
 	}
-	if existed {
+	if existed && kind == kindManaged {
 		if err := managedIncluded(l, path); err != nil {
 			return "", fmt.Errorf("not writing: %w", err)
 		}
+	}
+	if !existed && kind == kindMain {
+		return "", fmt.Errorf("not writing %s: the file does not exist", path)
 	}
 
 	skip := ""
@@ -325,7 +376,7 @@ func (a *App) saveManagedLocked(path string, d *config.Doc, v verifyPlan) (note 
 			// exactly what this save does anyway, so repair and retry once.
 			// The repair stays even if the save does not go through: putting
 			// back a mode that ssh refuses would break ssh again on purpose.
-			if fixed, ferr := fixWritableMode(target); ferr == nil && fixed != "" {
+			if fixed, ferr := fixWritableModeOf(kind, target); ferr == nil && fixed != "" {
 				note, modeNote = fixed, fixed
 				before, err = a.resolveAll(names)
 			}
@@ -365,7 +416,7 @@ func (a *App) saveManagedLocked(path string, d *config.Doc, v verifyPlan) (note 
 	if err := unchanged(); err != nil {
 		return fail(err)
 	}
-	if err := config.AtomicWriteMode(path, data, 0o600); err != nil {
+	if err := writeDoc(kind, path, data, 0o600); err != nil {
 		return fail(fmt.Errorf("write %s: %w", path, err))
 	}
 
@@ -395,7 +446,7 @@ func (a *App) saveManagedLocked(path string, d *config.Doc, v verifyPlan) (note 
 				mode = 0o600
 				kept = fmt.Sprintf("; permissions stay 0600 (they were %04o, which ssh refuses)", origMode)
 			}
-			rerr = config.AtomicWriteMode(path, orig, mode)
+			rerr = writeDoc(kind, path, orig, mode)
 		} else if rerr = os.Remove(target); os.IsNotExist(rerr) {
 			rerr = nil
 		}
@@ -417,7 +468,9 @@ func (a *App) saveManagedLocked(path string, d *config.Doc, v verifyPlan) (note 
 		err = trustLoaded(l2)
 	}
 	if err == nil {
-		err = managedIncluded(l2, path)
+		if kind == kindManaged {
+			err = managedIncluded(l2, path)
+		}
 	}
 	if err != nil {
 		return "", rollback(err)
@@ -503,6 +556,15 @@ func managedIncluded(l *config.Loaded, path string) error {
 			path, f.IncludedFrom, f.IncludeLine)
 	}
 	return nil
+}
+
+// fixWritableModeOf is fixWritableMode for the managed file; the hand-owned
+// main file's mode is never changed.
+func fixWritableModeOf(kind docKind, target string) (string, error) {
+	if kind != kindManaged {
+		return "", nil
+	}
+	return fixWritableMode(target)
 }
 
 // fixWritableMode chmods an existing group/world-writable regular file to
@@ -766,6 +828,16 @@ func (a *App) predictDerived(names []string, v verifyPlan) (map[string]map[strin
 	return pred, nil
 }
 
+// verifyError is the error of comparePlan: the text names the first differing
+// lines, keys lists the ssh -G options (lower case) that differed, so callers
+// can tell a token-derived option (ControlPath ... %C) from an ordinary one.
+type verifyError struct {
+	msg  string
+	keys []string
+}
+
+func (e *verifyError) Error() string { return e.msg }
+
 // comparePlan checks after against before under v. pred is the result of
 // predictDerived (nil: nothing predicted). For every probe name:
 //   - a name the plan does not allow to change must resolve identically;
@@ -805,7 +877,7 @@ func comparePlan(before, after map[string]string, pred map[string]map[string][]s
 		for k := range p {
 			keys[k] = true
 		}
-		var bad []string
+		var bad, badKeys []string
 		for _, k := range sortedSet(keys) {
 			switch {
 			case may && allowed[k]:
@@ -815,6 +887,7 @@ func comparePlan(before, after map[string]string, pred map[string]map[string][]s
 				if slices.Equal(p[k], a[k]) {
 					continue
 				}
+				badKeys = append(badKeys, k)
 				if slices.Equal(b[k], a[k]) {
 					bad = append(bad, fmt.Sprintf("= %s stayed [%s], but with the edited options ssh derives [%s]",
 						k, strings.Join(a[k], ", "), strings.Join(p[k], ", ")))
@@ -824,6 +897,7 @@ func comparePlan(before, after map[string]string, pred map[string]map[string][]s
 				bad = append(bad, fmt.Sprintf("  (from the edited options ssh derives %s [%s])", k, strings.Join(p[k], ", ")))
 			case !slices.Equal(b[k], a[k]):
 				// Ordered comparison: a reordered IdentityFile list is a change.
+				badKeys = append(badKeys, k)
 				bad = append(bad, valueDiff(k, b[k], a[k])...)
 			}
 		}
@@ -837,8 +911,11 @@ func comparePlan(before, after map[string]string, pred map[string]map[string][]s
 		if may {
 			what = "changed beyond the edited options"
 		}
-		return fmt.Errorf("verification failed: ssh -G %s %s (- before, + after):\n  %s",
-			n, what, strings.Join(bad, "\n  "))
+		return &verifyError{
+			msg: fmt.Sprintf("verification failed: ssh -G %s %s (- before, + after):\n  %s",
+				n, what, strings.Join(bad, "\n  ")),
+			keys: badKeys,
+		}
 	}
 	return nil
 }

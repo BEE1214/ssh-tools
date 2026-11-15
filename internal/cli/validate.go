@@ -89,6 +89,7 @@ e.g. production deployments.`,
 				return err
 			}
 			fmt.Fprintf(os.Stderr, "group %q disabled — blocks commented out of %s\n", args[0], a.ConfigPath())
+			printHint(a)
 			return nil
 		},
 	}
@@ -110,6 +111,7 @@ removed from the sidecar state file.`,
 				return err
 			}
 			fmt.Fprintf(os.Stderr, "group %q enabled — blocks restored in %s\n", args[0], a.ConfigPath())
+			printHint(a)
 			return nil
 		},
 	}
@@ -130,14 +132,17 @@ replaced in place and not moved; if other hosts follow it, a note is printed
 because its values then override theirs.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a := newApp()
-			note, err := a.InitDefaults()
+			written, note, err := a.InitDefaultsReport()
 			if err != nil {
 				return err
 			}
 			if note != "" {
 				fmt.Fprintln(os.Stderr, "note: "+note)
 			}
-			fmt.Fprintf(os.Stderr, "Host * defaults block written to %s\n", a.ConfigPath())
+			if written {
+				fmt.Fprintf(os.Stderr, "Host * defaults block written to %s\n", a.ConfigPath())
+				printHint(a)
+			}
 			return nil
 		},
 	}

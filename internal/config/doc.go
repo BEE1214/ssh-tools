@@ -28,6 +28,10 @@ type Doc struct {
 	Lines []string // verbatim file lines, no trailing "\n" elements
 
 	base []byte // the bytes the Doc was parsed from, see Base
+
+	// unterminated: the last line has no "\n" in the file the Doc stands for
+	// (see RawBytes). Only the raw operations of doc_raw.go look at it.
+	unterminated bool
 }
 
 // Base returns the exact bytes the Doc was parsed from (nil for a Doc that
@@ -74,6 +78,7 @@ var (
 // The Doc remembers raw (a copy) as its Base.
 func ParseDoc(raw []byte) *Doc {
 	d := &Doc{base: append([]byte(nil), raw...)}
+	d.unterminated = len(raw) > 0 && raw[len(raw)-1] != '\n'
 	text := strings.TrimSuffix(string(raw), "\n")
 	if text == "" && len(raw) == 0 {
 		return d
@@ -637,11 +642,9 @@ func exists(blocks []Block, host string) bool {
 // format (writeHostBlock), separated from the previous content by exactly
 // one blank line. The name must not exist yet.
 func (d *Doc) AppendBlock(h domain.Host) error {
-	if err := validName(h.Name); err != nil {
+	lines, err := BlockLines(h)
+	if err != nil {
 		return err
-	}
-	if err := checkLineBreaks(h); err != nil {
-		return fmt.Errorf("%w: %v", ErrBadValue, err)
 	}
 	blocks := d.Blocks()
 	if exists(blocks, h.Name) {
@@ -656,11 +659,6 @@ func (d *Doc) AppendBlock(h domain.Host) error {
 				ErrUnterminatedRegion, b.Start+1, b.Group)
 		}
 	}
-	var buf strings.Builder
-	buf.WriteString(groupCommentFor(h))
-	writeHostBlock(&buf, h)
-	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
-
 	end := len(d.Lines)
 	for end > 0 && strings.TrimSpace(d.Lines[end-1]) == "" {
 		end--
