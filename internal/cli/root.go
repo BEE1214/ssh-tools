@@ -57,6 +57,8 @@ ssh directly. Add -N yourself for no-shell tunnels.`,
 		newInitCmd(),
 		newCertCmd(),
 		newForwardCmd(),
+		newSetupCmd(),
+		newImportCmd(),
 		newVersionCmd(),
 	)
 

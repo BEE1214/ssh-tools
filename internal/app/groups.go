@@ -24,15 +24,29 @@ type groupState struct {
 
 // groupStatePath returns the sidecar state file path (respects the same
 // $SSH_AUTH_CONFIG override as the config file).
+//
+// In managed mode the sidecar belongs to the managed file
+// (<managed path>.sshm-groups, R10); in legacy mode to the main file.
 func (a *App) groupStatePath() string {
-	return a.configPath + ".sshm-groups"
+	if v, err := a.activeView(); err == nil && v != nil {
+		return a.managedGroupStatePath()
+	}
+	return a.mainGroupStatePath()
 }
+
+func (a *App) mainGroupStatePath() string    { return a.configPath + ".sshm-groups" }
+func (a *App) managedGroupStatePath() string { return a.ManagedPath() + ".sshm-groups" }
 
 // readGroupState loads the group state file. A missing file is an empty
 // state, not an error. Unknown group names (no matching hosts in config)
 // are kept — they may refer to hosts whose blocks were removed by hand.
 func (a *App) readGroupState() (map[string]bool, error) {
-	data, err := os.ReadFile(a.groupStatePath())
+	return readGroupStateFile(a.groupStatePath())
+}
+
+// readGroupStateFile is readGroupState for an explicit sidecar path.
+func readGroupStateFile(path string) (map[string]bool, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return map[string]bool{}, nil
@@ -170,6 +184,11 @@ func (a *App) DisableGroup(group string) error {
 	if err := domain.ValidateGroupName(group); err != nil {
 		return err
 	}
+	if v, err := a.activeView(); err != nil {
+		return err
+	} else if v != nil {
+		return a.disableGroupManaged(v, group)
+	}
 	if err := a.ensureGroupInMain("disable", group); err != nil {
 		return err
 	}
@@ -230,6 +249,11 @@ func (a *App) DisableGroup(group string) error {
 func (a *App) EnableGroup(group string) error {
 	if err := domain.ValidateGroupName(group); err != nil {
 		return err
+	}
+	if v, err := a.activeView(); err != nil {
+		return err
+	} else if v != nil {
+		return a.enableGroupManaged(v, group)
 	}
 	if err := a.ensureGroupInMain("enable", group); err != nil {
 		return err

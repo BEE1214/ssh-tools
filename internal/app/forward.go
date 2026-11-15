@@ -10,6 +10,11 @@ import (
 
 // AddForward validates and appends forward specs to a host's config block.
 func (a *App) AddForward(host string, kind domain.ForwardKind, specs []string) error {
+	if v, err := a.activeView(); err != nil {
+		return err
+	} else if v != nil {
+		return a.addForwardManaged(v, host, kind, specs)
+	}
 	if err := a.ensureInMain(host); err != nil {
 		return err
 	}
@@ -65,6 +70,11 @@ func (a *App) ListForwards(host string) (domain.Host, error) {
 // ClearForwards removes all forward entries (local, remote, and dynamic)
 // from a host's config block.
 func (a *App) ClearForwards(host string) error {
+	if v, err := a.activeView(); err != nil {
+		return err
+	} else if v != nil {
+		return a.clearForwardsManaged(v, host)
+	}
 	if err := a.ensureInMain(host); err != nil {
 		return err
 	}
@@ -99,6 +109,14 @@ func (a *App) ClearForwards(host string) error {
 // Uses syscall.Exec so ssh gets direct control of the process. This
 // function only returns on error — on success the process is replaced.
 func (a *App) RunForward(host string, kind domain.ForwardKind, specs []string, save bool) error {
+	return a.RunForwardNotify(host, kind, specs, save, nil)
+}
+
+// RunForwardNotify is RunForward with a callback: afterSave (may be nil) is
+// called once the specs are persisted (save is true) and before ssh replaces
+// the process, which is the only point where a caller can still say anything
+// after a successful --save.
+func (a *App) RunForwardNotify(host string, kind domain.ForwardKind, specs []string, save bool, afterSave func()) error {
 	// The host goes on the ssh command line as a plain argument (see
 	// checkHostArg). Checked first: nothing is saved for a refused name.
 	if err := checkHostArg(host); err != nil {
@@ -107,7 +125,7 @@ func (a *App) RunForward(host string, kind domain.ForwardKind, specs []string, s
 	// --save writes the host's block, so the write guard applies up front,
 	// before anything is exec'd. Without --save an included host is fine.
 	if save {
-		if err := a.ensureInMain(host); err != nil {
+		if err := a.guardWrite(host); err != nil {
 			return err
 		}
 	}
@@ -133,6 +151,9 @@ func (a *App) RunForward(host string, kind domain.ForwardKind, specs []string, s
 	if save {
 		if err := a.AddForward(host, kind, specs); err != nil {
 			return err
+		}
+		if afterSave != nil {
+			afterSave()
 		}
 	}
 

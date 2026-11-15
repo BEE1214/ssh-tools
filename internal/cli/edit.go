@@ -40,6 +40,7 @@ func newEditCmd() *cobra.Command {
 				return err
 			}
 			fmt.Printf("Updated host %s\n", name)
+			printHint(a)
 			return nil
 		},
 	}
