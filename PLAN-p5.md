@@ -92,6 +92,12 @@ name must not collide with a real host; doctor uses `sshm-doctor-probe`.
 - `ssh` absent (D18): run the test with `PATH` set to a dir without ssh.
 - Placeholders only (example.com, 10.0.0.x).
 
+## 5.1 Clarifications after the skeleton round (binding)
+- **D3 summary line:** printed only when `E + W > 0`. With only info findings the info lines are printed, no summary line, exit 0. (The skeleton's `reportDoctor` prints `0 error(s), 0 warning(s)` in that case: the implementation round must fix it.)
+- **Failure of `Doctor` itself** (D6, unreadable config): the command prints `Error: <err>` once and exits 1; no summary line.
+- **Exit mechanism:** the command returns `errors.New(<summary line>)` with `SilenceErrors` so the summary appears once. Tests assert a non-nil error from `Execute` plus the stderr text.
+- **Streams:** issue lines and the summary go to stderr; `No issues found.` goes to stdout.
+
 ## 6. Decisions (Adam, 2026-11-15)
 1. `--diff` / `--fix`: not in this phase. Decide on fixes after reading real doctor findings.
 2. Linter severities kept: `missing-identity-file` and `unsafe-permissions` are errors.

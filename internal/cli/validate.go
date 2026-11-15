@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/adamdvorsky/ssh-tools/internal/domain"
 	"github.com/spf13/cobra"
 )
 
@@ -25,26 +26,31 @@ func newValidateCmd() *cobra.Command {
 			}
 
 			for _, i := range issues {
-				location := ""
-				switch {
-				case i.File != "" && i.Line > 0:
-					location = fmt.Sprintf(" (%s line %d)", i.File, i.Line)
-				case i.File != "":
-					location = fmt.Sprintf(" (%s)", i.File)
-				case i.Line > 0:
-					location = fmt.Sprintf(" (line %d)", i.Line)
-				}
-				if i.HostName != "" {
-					fmt.Fprintf(os.Stderr, "%s [%s] %s: %s%s\n", i.Severity, i.Rule, i.HostName, i.Message, location)
-				} else {
-					fmt.Fprintf(os.Stderr, "%s [%s] %s%s\n", i.Severity, i.Rule, i.Message, location)
-				}
+				fmt.Fprintln(os.Stderr, formatIssue(i))
 			}
 
 			return nil
 		},
 	}
 	return cmd
+}
+
+// formatIssue renders one issue as a validate/doctor output line (without the
+// trailing newline): `<severity> [<rule>] <host>: <message> (<location>)`.
+func formatIssue(i domain.Issue) string {
+	location := ""
+	switch {
+	case i.File != "" && i.Line > 0:
+		location = fmt.Sprintf(" (%s line %d)", i.File, i.Line)
+	case i.File != "":
+		location = fmt.Sprintf(" (%s)", i.File)
+	case i.Line > 0:
+		location = fmt.Sprintf(" (line %d)", i.Line)
+	}
+	if i.HostName != "" {
+		return fmt.Sprintf("%s [%s] %s: %s%s", i.Severity, i.Rule, i.HostName, i.Message, location)
+	}
+	return fmt.Sprintf("%s [%s] %s%s", i.Severity, i.Rule, i.Message, location)
 }
 
 func newGroupsCmd() *cobra.Command {
