@@ -111,6 +111,14 @@ Apply output ends with `moved 3 blocks; ssh resolves every host identically` (ex
 - `ImportResult.Checked` (new `bool`) is true only when the `ssh -G` comparison ran. A dry run never runs it: `Checked=false`, `Equivalent=false`, and a note `equivalence is checked when --apply runs`. `Equivalent` is meaningful only when `Checked`.
 - `ImportResult.Diff` has two entries per differing `ssh -G` line, in order: `<host>: -<key> <old value>` then `<host>: +<key> <new value>` (a key that appears only before or only after yields just the `-` or `+` entry).
 
+### 5.2 Clarifications after the test round (binding for the implementation)
+- **S5 missing managed file:** a CONDITIONAL Include of the managed path is an error even if the managed file does not exist yet (decide from the Include lines, not from file existence).
+- **S6 wording:** missing main file / directories produce actions `create <dir> (0700)`, `create <main> (0600)` (for a missing main file; it is created containing only the Include line), `create <managed> (0600)`, then `insert Include line at line 1 of <main>` (not emitted when the main file is created with the Include line already in it: emit only `create <main> (0600) with Include line`).
+- **S9/S4 wording:** on an already set-up config, `setup` and `setup --dry-run` both print `already set up: <managed path> is included from <main>` with no `would ` prefix.
+- **I3 `Name`/order:** `ImportStay.Name` is the raw argument text after the `Host`/`Match` keyword; `Stay` and `Move` are in file order.
+- **Streams:** `setup` actions and notes go to stderr; `import` plan/outcome lines go to stdout; diff lines and errors go to stderr. Tests accept either stream for outcome lines.
+- **I12:** implemented with the existing lock + base-bytes mechanism (`ErrConflict`) for both files; not black-box testable, covered by the mutation audit.
+
 ## 6. Example
 
 main before: `Host *` (line 1) / `Host web-1` / `Host db-1`; after setup+import with `Host *` first:
