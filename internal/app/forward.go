@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"syscall"
 
 	"github.com/adamdvorsky/ssh-tools/internal/domain"
 )
@@ -100,6 +99,11 @@ func (a *App) ClearForwards(host string) error {
 // Uses syscall.Exec so ssh gets direct control of the process. This
 // function only returns on error — on success the process is replaced.
 func (a *App) RunForward(host string, kind domain.ForwardKind, specs []string, save bool) error {
+	// The host goes on the ssh command line as a plain argument (see
+	// checkHostArg). Checked first: nothing is saved for a refused name.
+	if err := checkHostArg(host); err != nil {
+		return err
+	}
 	// --save writes the host's block, so the write guard applies up front,
 	// before anything is exec'd. Without --save an included host is fine.
 	if save {
@@ -145,7 +149,7 @@ func (a *App) RunForward(host string, kind domain.ForwardKind, specs []string, s
 	env := os.Environ()
 
 	// syscall.Exec replaces the process. This never returns on success.
-	if err := syscall.Exec(binary, argv, env); err != nil {
+	if err := execReplace(binary, argv, env); err != nil {
 		return fmt.Errorf("exec ssh: %w", err)
 	}
 

@@ -325,7 +325,8 @@ func (a *App) ClearCertificateFile(name string) error {
 		return err
 	}
 
-	cfg.Hosts[idx].CertificateFile = ""
+	// Every CertificateFile line of the block goes, not only the first.
+	cfg.Hosts[idx].CertificateFile, cfg.Hosts[idx].CertificateFiles = singleFile("")
 	return a.save(cfg)
 }
 

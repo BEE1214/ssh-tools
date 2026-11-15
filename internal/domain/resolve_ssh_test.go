@@ -1,6 +1,9 @@
 package domain
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestMatchPattern_Extended(t *testing.T) {
 	tests := []struct {
@@ -119,6 +122,34 @@ func TestEffectiveConfig_FirstWins(t *testing.T) {
 	}
 }
 
+// Matching goes by Host.Patterns when the parser set them (Name is then the
+// raw text of the Host line, quotes and inline comment included); a Host
+// built in code has no Patterns and is matched by Name split on blanks.
+func TestMatchingUsesPatternsWhenSet(t *testing.T) {
+	hosts := []Host{
+		{Name: `"a b"`, Patterns: []string{"a b"}, User: "quoted"},      // ONE pattern
+		{Name: "x # the x box", Patterns: []string{"x"}, User: "noted"}, // the comment is no name
+		{Name: "# only a comment", Patterns: []string{}, User: "never"}, // matches nothing
+		{Name: "built in-code", User: "plain"},                          // nil Patterns: two names
+		{Name: "*", User: "star"},
+	}
+	for name, want := range map[string]string{
+		"a": "star", "b": "star", "x": "noted", "the": "star", "box": "star", "#": "star",
+		"only": "star", "comment": "star", "built": "plain", "in-code": "plain",
+	} {
+		got, err := EffectiveConfig(hosts, name)
+		if err != nil || got.User != want {
+			t.Errorf("EffectiveConfig(%q).User = %q (%v), want %q", name, got.User, err, want)
+		}
+	}
+	if got := (Host{Name: "# c", Patterns: []string{}}).PatternList(); len(got) != 0 {
+		t.Errorf("empty Patterns must not fall back to Name: %q", got)
+	}
+	if got := (Host{Name: "a  b"}).PatternList(); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("PatternList of a built Host = %q", got)
+	}
+}
+
 func TestEffectiveConfig_NegationOnlyNotFound(t *testing.T) {
 	hosts := []Host{{Name: "* !secret", User: "u"}}
 	if _, err := EffectiveConfig(hosts, "secret"); err != ErrHostNotFound {
@@ -166,16 +197,20 @@ func TestEffectiveConfig_ListsAccumulateDedup(t *testing.T) {
 	}
 }
 
-func TestEffectiveConfig_IdentityFileFirstWins(t *testing.T) {
-	// Documented model limitation: ssh accumulates IdentityFile across
-	// blocks, the single-valued field keeps the first.
+func TestEffectiveConfig_IdentityAndCertificateFilesAccumulate(t *testing.T) {
 	hosts := []Host{
-		{Name: "h", IdentityFile: "/k/one"},
-		{Name: "*", IdentityFile: "/k/two"},
+		{Name: "h", IdentityFile: "/k/one", IdentityFiles: []string{"/k/one", "/k/extra"}, CertificateFile: "/k/one-cert.pub"},
+		{Name: "*", IdentityFile: "/k/two", IdentityFiles: []string{"/k/two", "/k/one"}, CertificateFiles: []string{"/k/two-cert.pub"}},
 	}
 	got, _ := EffectiveConfig(hosts, "h")
-	if got.IdentityFile != "/k/one" {
-		t.Errorf("IdentityFile = %q, want /k/one", got.IdentityFile)
+	if got.IdentityFile != "/k/one" || got.CertificateFile != "/k/one-cert.pub" {
+		t.Errorf("singular fields must be the first value, got %q / %q", got.IdentityFile, got.CertificateFile)
+	}
+	if want := []string{"/k/one", "/k/extra", "/k/two"}; !slices.Equal(got.IdentityFiles, want) {
+		t.Errorf("IdentityFiles = %v, want %v (accumulated, de-duplicated, in order)", got.IdentityFiles, want)
+	}
+	if want := []string{"/k/one-cert.pub", "/k/two-cert.pub"}; !slices.Equal(got.CertificateFiles, want) {
+		t.Errorf("CertificateFiles = %v, want %v", got.CertificateFiles, want)
 	}
 	if m := MatchingHosts(hosts, "h"); len(m) != 2 {
 		t.Errorf("MatchingHosts = %d, want 2", len(m))

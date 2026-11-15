@@ -116,9 +116,20 @@ func TestParseMismatchedEndMarker(t *testing.T) {
 	}
 }
 
-// TestParseMarkerInsideHostBlock: a marker-looking comment inside an enabled
-// host block is just a comment — later hosts survive.
+// TestParseMarkerInsideHostBlock: a start marker directly below a host block
+// (no blank line).
+//   - Without an end marker it is just a comment and later hosts survive.
+//     This is the behaviour from before P2b, restored in P2c: P2b made it a
+//     parse error, so one stray line failed every command on a config that
+//     ssh accepts.
+//   - With an end marker around commented-out lines it is read exactly like
+//     one after a blank line (P2b, review M5: Doc.DisableBlocks produces this
+//     layout and Doc reads it this way): it ends the block above.
+//   - An END marker inside a block stays a comment.
+//
+// (Marker pairs around ACTIVE lines: TestParseMarkerPairAroundActiveLines.)
 func TestParseMarkerInsideHostBlock(t *testing.T) {
+	// Unterminated: a comment, exactly as at HEAD.
 	in := "Host a\n  HostName 10.0.0.1\n" +
 		domain.DisabledMarkerStart("grp") + "\n" +
 		"  User root\n\n" +
@@ -137,6 +148,41 @@ func TestParseMarkerInsideHostBlock(t *testing.T) {
 		if h.Disabled {
 			t.Errorf("host %q wrongly disabled", h.Name)
 		}
+	}
+
+	// Terminated: a is closed by the marker, b is disabled, c is untouched.
+	in = "Host a\n  HostName 10.0.0.1\n" +
+		domain.DisabledMarkerStart("grp") + "\n" +
+		"# Host b\n#   HostName 10.0.0.2\n" +
+		domain.DisabledMarkerEnd("grp") + "\n" +
+		"Host c\n  HostName 10.0.0.3\n"
+	cfg, err = Parse([]byte(in))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := hostNames(cfg); len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
+		t.Fatalf("hosts = %v, want [a b c]", got)
+	}
+	for i, wantDisabled := range []bool{false, true, false} {
+		if cfg.Hosts[i].Disabled != wantDisabled {
+			t.Errorf("host %q disabled = %v, want %v", cfg.Hosts[i].Name, cfg.Hosts[i].Disabled, wantDisabled)
+		}
+	}
+	if cfg.Hosts[0].HostName != "10.0.0.1" || cfg.Hosts[1].HostName != "10.0.0.2" || cfg.Hosts[1].Group != "grp" {
+		t.Errorf("hosts = %+v", cfg.Hosts[:2])
+	}
+
+	// A stray END marker inside a host block is still only a comment.
+	in = "Host a\n  HostName 10.0.0.1\n" +
+		domain.DisabledMarkerEnd("grp") + "\n" +
+		"  User root\n\n" +
+		"Host b\n  HostName 10.0.0.2\n"
+	cfg, err = Parse([]byte(in))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := hostNames(cfg); len(got) != 2 || cfg.Hosts[0].User != "root" || cfg.Hosts[0].Disabled || cfg.Hosts[1].Disabled {
+		t.Fatalf("hosts = %+v", cfg.Hosts)
 	}
 }
 

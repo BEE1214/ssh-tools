@@ -6,7 +6,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/adamdvorsky/ssh-tools/internal/domain"
@@ -21,12 +20,29 @@ const maxIncludeDepth = 16
 type IncludeDirective struct {
 	Line     int
 	Patterns []string
+	// Conditional: the line stands below a Host or Match line of its file
+	// that does not match every host, so ssh applies the included files only
+	// while that block matches. Not conditional: an Include above the first
+	// Host/Match line, or below a "Host *" / "Match all" line (the nearest
+	// one above it counts).
+	Conditional bool
 }
 
 // File is one parsed config file of a Loaded set.
 type File struct {
 	Path string
 	Cfg  *ConfigFile
+
+	// IncludedFrom / IncludeLine name the Include line that pulled the file
+	// in (empty / 0 for the main file).
+	IncludedFrom string
+	IncludeLine  int
+	// Conditional: the Include line (or one further up the chain) sits below
+	// a Host/Match line that does not match every host (see
+	// IncludeDirective.Conditional), so ssh only APPLIES this file while that
+	// block matches (it still parses it). Hosts defined here are not
+	// generally visible to ssh.
+	Conditional bool
 }
 
 // Loaded is the read-only result of following Include directives from a main
@@ -43,10 +59,29 @@ type Loaded struct {
 	// Warnings are non-fatal problems: unreadable or unparsable includes,
 	// depth exceeded, cycles, unsupported % / $ tokens.
 	Warnings []string
+	// Unfollowed is the subset of Warnings that means ssh may read files
+	// (or fail on files) that Load did not read: an Include with % / $ tokens
+	// or a ~user path, an unreadable or unparsable include, a cycle, the
+	// depth limit. When it is not empty the Loaded view is NOT what ssh
+	// sees and must not be used to decide that a write is safe. A repeated
+	// Include of a file that was already read is not in this list.
+	Unfollowed []string
 }
 
 // MainPath is the path of the main file (always Files[0]).
 func (l *Loaded) MainPath() string { return l.Files[0].Path }
+
+// Lookup returns the loaded file that is path, comparing after symlink
+// resolution on both sides.
+func (l *Loaded) Lookup(path string) (File, bool) {
+	want := canonPath(path)
+	for _, f := range l.Files {
+		if canonPath(f.Path) == want {
+			return f, true
+		}
+	}
+	return File{}, false
+}
 
 // homeDir returns the passwd home directory, which is what OpenSSH uses for
 // "~" and for relative Include paths (it ignores $HOME). A variable so tests
@@ -94,7 +129,7 @@ func Load(mainPath string) (*Loaded, error) {
 	}
 
 	l := &loader{out: &Loaded{}, seen: map[string]bool{canonPath(abs): true}}
-	l.walk(abs, cfg, []string{canonPath(abs)}, 0)
+	l.walk(File{Path: abs, Cfg: cfg}, []string{canonPath(abs)}, 0)
 	return l.out, nil
 }
 
@@ -107,16 +142,25 @@ func (l *loader) warnf(format string, args ...any) {
 	l.out.Warnings = append(l.out.Warnings, fmt.Sprintf(format, args...))
 }
 
+// blindf records a warning that also goes to Unfollowed: ssh may see
+// something here that Load did not.
+func (l *loader) blindf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	l.out.Warnings = append(l.out.Warnings, msg)
+	l.out.Unfollowed = append(l.out.Unfollowed, msg)
+}
+
 // walk records the file and appends its hosts, inlining each included file
 // right before the first host that follows the Include line. chain holds the
 // canonical paths of the files currently being included (cycle guard).
-func (l *loader) walk(path string, cfg *ConfigFile, chain []string, depth int) {
-	l.out.Files = append(l.out.Files, File{Path: path, Cfg: cfg})
+func (l *loader) walk(f File, chain []string, depth int) {
+	l.out.Files = append(l.out.Files, f)
+	path, cfg := f.Path, f.Cfg
 
 	next := 0
 	flushIncludes := func(beforeLine int) {
 		for next < len(cfg.Includes) && cfg.Includes[next].Line < beforeLine {
-			l.follow(path, cfg.Includes[next], chain, depth)
+			l.follow(f, cfg.Includes[next], chain, depth)
 			next++
 		}
 	}
@@ -132,43 +176,53 @@ func (l *loader) walk(path string, cfg *ConfigFile, chain []string, depth int) {
 	flushIncludes(int(^uint(0) >> 1))
 }
 
-func (l *loader) follow(from string, inc IncludeDirective, chain []string, depth int) {
+func (l *loader) follow(from File, inc IncludeDirective, chain []string, depth int) {
+	// ssh applies an Include below a Host/Match line only while that block
+	// matches (always, for "Host *" and "Match all"); a file included from a
+	// conditional file is conditional too.
+	cond := from.Conditional || inc.Conditional
 	for _, pat := range inc.Patterns {
 		paths, warn := ExpandInclude(pat)
 		if warn != "" {
-			l.warnf("%s:%d: %s", from, inc.Line, warn)
+			// Every ExpandInclude warning is a pattern Load could not
+			// expand although ssh might.
+			l.blindf("%s:%d: %s", from.Path, inc.Line, warn)
 		}
 		for _, p := range paths {
-			l.include(from, inc.Line, p, chain, depth)
+			l.include(from.Path, inc.Line, p, cond, chain, depth)
 		}
 	}
 }
 
-func (l *loader) include(from string, line int, p string, chain []string, depth int) {
+func (l *loader) include(from string, line int, p string, cond bool, chain []string, depth int) {
 	key := canonPath(p)
 	switch {
 	case slices.Contains(chain, key):
-		l.warnf("%s:%d: include cycle: %s is already being included", from, line, p)
+		l.blindf("%s:%d: include cycle: %s is already being included", from, line, p)
 		return
 	case depth+1 > maxIncludeDepth:
-		l.warnf("%s:%d: include depth limit (%d) exceeded, skipping %s", from, line, maxIncludeDepth, p)
+		l.blindf("%s:%d: include depth limit (%d) exceeded, skipping %s", from, line, maxIncludeDepth, p)
 		return
 	case l.seen[key]:
+		// Not blind: the file and everything it includes were read.
 		l.warnf("%s:%d: %s is already included elsewhere, skipping the repeat", from, line, p)
 		return
 	}
 	raw, err := os.ReadFile(p)
 	if err != nil {
-		l.warnf("%s:%d: cannot read include %s: %v", from, line, p, err)
+		l.blindf("%s:%d: cannot read include %s: %v", from, line, p, err)
 		return
 	}
 	cfg, err := Parse(raw)
 	if err != nil {
-		l.warnf("%s:%d: cannot parse include %s: %v", from, line, p, err)
+		l.blindf("%s:%d: cannot parse include %s: %v", from, line, p, err)
 		return
 	}
 	l.seen[key] = true
-	l.walk(filepath.Clean(p), cfg, append(slices.Clone(chain), key), depth+1)
+	// p comes from ExpandInclude, which already returns the tidiest path
+	// that is still this file (cleaning it again could name another one).
+	l.walk(File{Path: p, Cfg: cfg, IncludedFrom: from, IncludeLine: line, Conditional: cond},
+		append(slices.Clone(chain), key), depth+1)
 }
 
 // canonPath returns an absolute, symlink-free form of p when it can be
@@ -184,17 +238,31 @@ func canonPath(p string) string {
 }
 
 // ExpandInclude resolves one Include pattern to the existing regular files it
-// names, in glob (lexical) order. It mirrors OpenSSH:
+// names, in the order ssh reads them. It mirrors OpenSSH:
 //   - "~" and "~/..." expand to the passwd home, not $HOME;
 //   - a relative pattern is relative to <home>/.ssh, not to the including file;
+//   - the pattern is matched with the rules of the glob(3) that ssh carries,
+//     not with Go's filepath.Glob (see glob.go): "[!x]" negates, "^" is an
+//     ordinary set member, "?" is one byte, an unbalanced "[" is literal, and
+//     a wildcard never matches a leading "." of a file name, so "config.d/*"
+//     skips ".sshm.lock" or an editor's ".sshm.conf.swp";
 //   - a pattern matching nothing (or a missing file) yields no paths and no
-//     warning;
-//   - patterns with % or $ tokens are not supported yet: no paths, a warning.
+//     warning.
+//
+// A non-empty warning means sshm could NOT tell which files ssh reads for
+// this pattern, and no paths are returned (the loader files it under
+// Loaded.Unfollowed): % or $ tokens, ~user, and glob syntax that is not
+// reproduced exactly, such as character classes ("[[:alpha:]]"). Nothing is
+// ever guessed.
 func ExpandInclude(pattern string) ([]string, string) {
 	if strings.ContainsAny(pattern, "%$") {
 		return nil, fmt.Sprintf("Include %q: %% and $ tokens are not supported yet, skipped", pattern)
 	}
 
+	// The pattern is joined to the home directory as text, not with
+	// filepath.Join: Join would resolve a ".." of the pattern lexically,
+	// which is not what ssh (the kernel) does behind a symlink or a missing
+	// directory.
 	p := pattern
 	switch {
 	case p == "~" || strings.HasPrefix(p, "~/"):
@@ -202,7 +270,7 @@ func ExpandInclude(pattern string) ([]string, string) {
 		if home == "" {
 			return nil, fmt.Sprintf("Include %q: cannot determine home directory, skipped", pattern)
 		}
-		p = filepath.Join(home, p[1:])
+		p = home + p[1:]
 	case strings.HasPrefix(p, "~"):
 		return nil, fmt.Sprintf("Include %q: ~user paths are not supported yet, skipped", pattern)
 	case !filepath.IsAbs(p):
@@ -210,20 +278,19 @@ func ExpandInclude(pattern string) ([]string, string) {
 		if home == "" {
 			return nil, fmt.Sprintf("Include %q: cannot determine home directory, skipped", pattern)
 		}
-		p = filepath.Join(home, ".ssh", p)
+		p = home + "/.ssh/" + p
 	}
 
-	matches, err := filepath.Glob(p)
-	if err != nil {
-		return nil, fmt.Sprintf("Include %q: bad glob pattern, skipped", pattern)
+	matches, why := sshGlob(p)
+	if why != "" {
+		return nil, fmt.Sprintf("Include %q: %s, and sshm cannot tell exactly which files ssh reads for it; skipped", pattern, why)
 	}
 	var files []string
 	for _, m := range matches {
 		if fi, err := os.Stat(m); err == nil && fi.Mode().IsRegular() {
-			files = append(files, m)
+			files = append(files, tidyGlobPath(m))
 		}
 	}
-	sort.Strings(files)
 	return files, ""
 }
 
@@ -242,46 +309,9 @@ func parseIncludeLine(trimmed string) ([]string, bool) {
 	}
 	rest = strings.TrimLeft(rest, " \t")
 	rest = strings.TrimPrefix(rest, "=")
-	pats := splitArgs(strings.TrimLeft(rest, " \t"))
+	pats := SplitWords(strings.TrimLeft(rest, " \t"))
 	if len(pats) == 0 {
 		return nil, false
 	}
 	return pats, true
-}
-
-// splitArgs splits s on blanks, honoring single and double quotes (stripped)
-// and stopping at an unquoted "#" that starts a token.
-func splitArgs(s string) []string {
-	var args []string
-	var cur strings.Builder
-	inTok := false
-	var quote rune
-	for _, r := range s {
-		switch {
-		case quote != 0:
-			if r == quote {
-				quote = 0
-			} else {
-				cur.WriteRune(r)
-			}
-		case r == '"' || r == '\'':
-			quote = r
-			inTok = true
-		case r == ' ' || r == '\t':
-			if inTok {
-				args = append(args, cur.String())
-				cur.Reset()
-				inTok = false
-			}
-		case r == '#' && !inTok:
-			return args
-		default:
-			cur.WriteRune(r)
-			inTok = true
-		}
-	}
-	if inTok {
-		args = append(args, cur.String())
-	}
-	return args
 }

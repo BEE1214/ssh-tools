@@ -88,7 +88,12 @@ func TestExpandInclude(t *testing.T) {
 		{"dollar token skipped with warning", "$HOME/.ssh/x.conf", nil, "not supported"},
 		{"braced env skipped with warning", "${HOME}/x", nil, "not supported"},
 		{"~user skipped with warning", "~bob/x.conf", nil, "~user"},
-		{"bad glob warns", "conf.d/[", nil, "bad glob"},
+		{"negated set, as ssh reads it", "conf.d/[!ab].conf", []string{j(home, ".ssh", "conf.d", "c.conf")}, ""},
+		{"caret is an ordinary set member", "conf.d/[^ab].conf",
+			[]string{j(home, ".ssh", "conf.d", "a.conf"), j(home, ".ssh", "conf.d", "b.conf")}, ""},
+		{"unbalanced bracket is a literal, as for ssh", "conf.d/[", nil, ""},
+		{"character class is not followed", "conf.d/[[:alpha:]].conf", nil, "character class"},
+		{"relative .. is not resolved lexically", "nodir/../rel.conf", nil, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -183,28 +183,84 @@ Host *
 		},
 		names: []string{"secret-1", "db-1", "db-22", "plain", "web-1", "other"},
 	},
+	{
+		// P2c item 1: Host lines with quotes, escapes and inline comments.
+		// Matching goes by Host.Patterns (what ssh reads), not by the raw
+		// text in Host.Name.
+		name: "quoted-and-commented-host-lines",
+		files: map[string]string{
+			"config": `Host "q one" q-two # trailing words
+  User quoted
+  Port 2212
+
+Host # nothing here
+  User nobody
+
+Host q\ three q-four
+  User escaped
+  IdentityFile @@/id_escaped
+
+Host *
+  User star
+  IdentityFile @@/id_default
+`,
+		},
+		names: []string{"q-two", "q-four", "q", "one", "three", "trailing", "words", "nothing", "here", "other"},
+	},
+	{
+		// P2c item 6: disabled-group markers directly below host blocks. An
+		// unterminated start marker and a pair around active lines are just
+		// comments (the options around them belong to the block); after an
+		// inert region the block above goes on.
+		name: "markers-below-host-blocks",
+		files: map[string]string{
+			"config": `Host mk-a
+  HostName 10.0.6.1
+# sshm disabled group=pair start
+  Port 2210
+# sshm disabled group=pair end
+  IdentityFile @@/id_mk_a
+
+Host mk-b
+  HostName 10.0.6.2
+# sshm disabled group=inert start
+# Host mk-off
+#   User off
+# sshm disabled group=inert end
+  Port 2211
+  LocalForward 9040 192.0.2.50:80
+
+Host mk-c
+  HostName 10.0.6.3
+# sshm disabled group=dangling start
+  User marker-user
+  IdentityFile @@/id_mk_c
+
+Host *
+  User star
+  IdentityFile @@/id_default
+`,
+		},
+		names: []string{"mk-a", "mk-b", "mk-c", "other"},
+	},
 }
 
 // TestDifferentialAgainstSSH compares sshm's view of generated multi-file
 // configs (Load + domain.EffectiveConfig) with `ssh -F <main> -G <host>`.
 //
 // Compared: hostname, user, port as scalars (first match wins, like ssh),
-// identityfile and localforward as SETS (list options: every matching block
-// contributes).
+// identityfile (EffectiveConfig.IdentityFiles) and localforward as SETS (list
+// options: every matching block contributes, repeated lines accumulate).
 //
 // Remaining, documented differences (not hidden by the test):
 //
-//  1. IdentityFile is single-valued in the Host model and the parser keeps
-//     the last line of a block, so EffectiveConfig.IdentityFile is first-wins.
-//     The set comparison therefore uses domain.MatchingHosts (one value per
-//     matching block); fixtures use one IdentityFile line per block.
-//  2. An Include below a "Host x" line is conditional in ssh (only applies
+//  1. An Include below a "Host x" line is conditional in ssh (only applies
 //     while x matches); sshm follows it unconditionally. Fixtures put every
 //     Include above the first Host or inside an always-true "Host *" region.
-//  3. Defaults: ssh fills in port 22 and the login user; sshm leaves them
+//  2. Defaults: ssh fills in port 22 and the login user; sshm leaves them
 //     empty. Every fixture host gets User from some block, Port ""==22, and
 //     an unset HostName resolves to the host name itself.
-//  4. Match blocks are out of scope and not used.
+//  3. Match blocks are out of scope and not used.
 func TestDifferentialAgainstSSH(t *testing.T) {
 	if _, err := exec.LookPath("ssh"); err != nil {
 		t.Skip("ssh not in PATH")
@@ -244,13 +300,10 @@ func TestDifferentialAgainstSSH(t *testing.T) {
 						t.Errorf("user: sshm %q, ssh %q", got, want)
 					}
 
-					var mineIDs []string
-					for _, h := range domain.MatchingHosts(l.Hosts, name) {
-						if h.IdentityFile != "" {
-							mineIDs = append(mineIDs, h.IdentityFile)
-						}
+					assertSetEqual(t, "identityfile", mine.IdentityFiles, ssh["identityfile"])
+					if got, want := mine.IdentityFile, first(ssh["identityfile"]); got != want {
+						t.Errorf("first identityfile: sshm %q, ssh %q", got, want)
 					}
-					assertSetEqual(t, "identityfile", mineIDs, ssh["identityfile"])
 
 					// ssh -G prints "[host]:port" brackets; strip them to compare.
 					var wantFwd []string

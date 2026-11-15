@@ -60,6 +60,9 @@ func Parse(raw []byte) (*ConfigFile, error) {
 	var disabledGroup string
 	var disabledRaw []string
 	var disabledStart int
+	// inConditionalBlock: the nearest enabled Host/Match line above the
+	// current line does not match every host (see matchesEveryHost).
+	var inConditionalBlock bool
 	commentStart := 0
 	lineNum := 0
 
@@ -93,27 +96,69 @@ func Parse(raw []byte) (*ConfigFile, error) {
 		}
 	}
 
+	// All lines first: a start marker below a host block is only honoured
+	// when its end marker exists further down (look-ahead).
+	var lines []string
 	for scanner.Scan() {
-		lineNum++
-		raw := scanner.Text()
+		lines = append(lines, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan error: %w", err)
+	}
+
+	// resumeHost is the index in cfg.Hosts of a host block that a disabled
+	// region interrupted (the region stood directly below it), or -1. For
+	// ssh the region is only comments, so option lines that follow the end
+	// marker still belong to that block.
+	resumeHost := -1
+
+	for i, raw := range lines {
+		lineNum = i + 1
 		trimmed := strings.TrimSpace(raw)
 
 		// Disabled group markers: "# sshm disabled group=<name> start/end".
 		// Lines between markers belong to disabled host blocks and are not
 		// comments — the writer re-emits them verbatim on enable.
 		//
-		// Markers are only honored in well-formed positions: a start marker
-		// outside any host block and outside another disabled block, an end
-		// marker that closes the open block of the same group. Anything else
-		// is an ordinary comment (or a raw line of the open disabled block),
-		// so a stray marker can never swallow hosts.
-		if name, ok := domain.IsDisabledMarkerStart(trimmed); ok && !inDisabledBlock && currentHost == nil {
-			flushComment()
-			disabledGroup = name
-			disabledStart = lineNum
-			inDisabledBlock = true
-			commentLines = nil
-			continue
+		// A start marker inside another disabled block is a raw line of that
+		// block. Otherwise:
+		//   - Outside a host block it opens a disabled block. If no end
+		//     marker follows, the parse fails below, loudly: the block would
+		//     swallow every following host and a later save would delete
+		//     them. (Unchanged since before P2.)
+		//   - Directly below a host block (no blank line) it opens a disabled
+		//     block only when it is well formed: an end marker of the same
+		//     group exists further down AND every line in between is a
+		//     comment or blank, i.e. the region is inert for ssh. Then it
+		//     ENDS the host block for now: Doc reads the file the same way,
+		//     and Doc.DisableBlocks produces exactly this layout for
+		//     "Host a / Host b" with no blank line between them.
+		//   - Any other marker below a host block (no end marker; or a pair
+		//     around ACTIVE lines) is an ordinary comment inside that block,
+		//     as it was before P2b: the lines around it stay options of the
+		//     block, which is how ssh reads them, and nothing fails.
+		// An end marker only closes the open block of the same group;
+		// anything else is an ordinary comment.
+		if name, ok := domain.IsDisabledMarkerStart(trimmed); ok && !inDisabledBlock {
+			open := currentHost == nil
+			if !open {
+				end := markerEnd(lines, i, name)
+				open = end >= 0 && inertLines(lines[i+1:end])
+			}
+			if open {
+				resumeHost = -1
+				if currentHost != nil {
+					currentHost.LineEnd = lineNum - 1
+					flushHost()
+					resumeHost = len(cfg.Hosts) - 1
+				}
+				flushComment()
+				disabledGroup = name
+				disabledStart = lineNum
+				inDisabledBlock = true
+				commentLines = nil
+				continue
+			}
 		}
 		if name, ok := domain.IsDisabledMarkerEnd(trimmed); ok && inDisabledBlock && name == disabledGroup {
 			appendDisabledHosts(cfg, disabledGroup, disabledRaw)
@@ -139,6 +184,7 @@ func Parse(raw []byte) (*ConfigFile, error) {
 		if strings.HasPrefix(trimmed, "# DevPod Start ") {
 			flushComment()
 			flushHost()
+			resumeHost = -1
 
 			devpodName := strings.TrimPrefix(trimmed, "# DevPod Start ")
 			// Set flag: next "Host" line should be marked as DevPod source.
@@ -149,6 +195,7 @@ func Parse(raw []byte) (*ConfigFile, error) {
 		// DevPod block end: "# DevPod End <name>"
 		if strings.HasPrefix(trimmed, "# DevPod End ") {
 			flushHost()
+			resumeHost = -1
 			pendingDevPod = ""
 			// Don't treat the End marker as a comment block — it's part of the DevPod section.
 			commentLines = nil
@@ -167,17 +214,36 @@ func Parse(raw []byte) (*ConfigFile, error) {
 		// block it is an unmodeled option) so Write output is unchanged.
 		// Lines inside disabled-group markers never reach this point.
 		if pats, ok := parseIncludeLine(trimmed); ok {
-			cfg.Includes = append(cfg.Includes, IncludeDirective{Line: lineNum, Patterns: pats})
+			cfg.Includes = append(cfg.Includes, IncludeDirective{Line: lineNum, Patterns: pats, Conditional: inConditionalBlock})
+		}
+
+		names, isHost, isMatch := blockLine(trimmed)
+		if isHost || isMatch {
+			// For ssh a block runs to the next Host/Match line (blank lines
+			// do not end it), and an Include inside it is applied only while
+			// the block matches.
+			inConditionalBlock = !matchesEveryHost(names, isMatch)
+			// A Match line starts a new block for ssh: whatever follows it
+			// no longer belongs to a host block interrupted further up.
+			resumeHost = -1
 		}
 
 		// Host line: starts a new host block
-		if isHostLine(trimmed) {
+		if isHost {
 			flushComment()
 			flushHost()
 
-			name := strings.TrimSpace(trimmed[5:])
+			// Name is the argument text as written: the legacy Write puts it
+			// back byte-for-byte, so quotes, escapes and an inline comment
+			// survive a Parse→Write cycle. Patterns is what ssh makes of it
+			// (SplitWords); always non-nil here, see domain.Host.Patterns.
+			name := hostLineName(trimmed)
+			if names == nil {
+				names = []string{}
+			}
 			currentHost = &domain.Host{
-				Name: name,
+				Name:     name,
+				Patterns: names,
 			}
 			if pendingGroup != "" {
 				currentHost.Group = pendingGroup
@@ -198,10 +264,22 @@ func Parse(raw []byte) (*ConfigFile, error) {
 		// Empty line or comment — not inside a host block
 		if currentHost == nil {
 			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+				if trimmed == "" {
+					resumeHost = -1 // a blank line ends a block for this parser
+				}
 				if len(commentLines) == 0 {
 					commentStart = lineNum
 				}
 				commentLines = append(commentLines, raw)
+				continue
+			}
+			// An option line right below a disabled region that interrupted a
+			// host block: it is still an option of that block (see resumeHost).
+			// Treating it as a stray line would move it into Comments, and
+			// Write would emit it at the top of the file as a GLOBAL option.
+			if resumeHost >= 0 {
+				_ = parseKeyValue(&cfg.Hosts[resumeHost], trimmed)
+				cfg.Hosts[resumeHost].LineEnd = lineNum
 				continue
 			}
 			// Non-empty, non-comment, non-Host line outside a block.
@@ -243,12 +321,10 @@ func Parse(raw []byte) (*ConfigFile, error) {
 	flushComment()
 	flushHost()
 
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan error: %w", err)
-	}
-
 	// An unterminated disabled block would swallow every following host and
-	// a later save would delete them — fail loudly instead.
+	// a later save would delete them — fail loudly instead. (Only a start
+	// marker outside a host block can get here; one inside a block is only
+	// honoured when its end marker exists.)
 	if inDisabledBlock {
 		return nil, fmt.Errorf("unterminated disabled group block %q: start marker at line %d has no matching end marker",
 			disabledGroup, disabledStart)
@@ -257,72 +333,152 @@ func Parse(raw []byte) (*ConfigFile, error) {
 	return cfg, nil
 }
 
-// isHostLine checks if a trimmed line starts with "Host " (case-insensitive)
-// but not "HostName" or "HostKeyAlgorithms" etc.
-func isHostLine(line string) bool {
-	lower := strings.ToLower(line)
-	if !strings.HasPrefix(lower, "host ") {
+// matchesEveryHost reports whether a Host/Match line with these arguments
+// certainly applies to every host, so that what stands below it (an Include
+// in particular) is not conditional: exactly "Host *" (one pattern) and
+// "Match all" (one criterion). Checked against OpenSSH 10.6: an Include below
+// either is applied to every host. Everything else counts as conditional,
+// including lines that happen to match everything ("Host * *", "Match host
+// *") or nearly everything ("Host * !x"): the safe direction.
+func matchesEveryHost(args []string, isMatch bool) bool {
+	if len(args) != 1 {
 		return false
 	}
-	// Make sure it's not "HostName", "HostKeyAlgorithms", etc.
-	rest := line[5:] // after "Host "
-	if rest == "" {
-		return false
+	if isMatch {
+		return strings.EqualFold(args[0], "all")
 	}
-	// "Host " followed by non-letter means it's a Host directive.
-	// "HostName" would be "Host HostName" -> no, it'd be "HostName ...".
-	// Actually the prefix check is on the line: "HostName ..." doesn't start with "Host " (space after Host).
-	// "HostName" starts with "HostN" not "Host " (with space).
-	// But case-insensitive: "hostname" starts with "host" but not "host " (with trailing space).
-	// So the HasPrefix("host ") check already excludes "hostname".
+	return args[0] == "*"
+}
+
+// markerEnd returns the index of the first end marker of group below
+// lines[start] (a start marker), or -1 when there is none.
+func markerEnd(lines []string, start int, group string) int {
+	for k := start + 1; k < len(lines); k++ {
+		if g, ok := domain.IsDisabledMarkerEnd(strings.TrimSpace(lines[k])); ok && g == group {
+			return k
+		}
+	}
+	return -1
+}
+
+// inertLines reports whether every line is blank or a comment, i.e. means
+// nothing to ssh.
+func inertLines(lines []string) bool {
+	for _, l := range lines {
+		if t := strings.TrimSpace(l); t != "" && !strings.HasPrefix(t, "#") {
+			return false
+		}
+	}
 	return true
 }
 
-// parseKeyValue parses a "key value" line and stores it in the host.
+// splitKeyword splits an (already trimmed) config line into its keyword and
+// value the way ssh does: the keyword ends at the first blank or '=', and
+// the value follows after blanks and at most one '=' ("Key value",
+// "Key=value", "Key = value" and "Key =value" are all the same). ok is false
+// when the line has no value.
+func splitKeyword(line string) (key, value string, ok bool) {
+	idx := strings.IndexAny(line, " \t=")
+	if idx <= 0 {
+		return "", "", false
+	}
+	key = line[:idx]
+	rest := strings.TrimLeft(line[idx:], " \t")
+	rest = strings.TrimPrefix(rest, "=")
+	value = strings.TrimSpace(rest)
+	if value == "" {
+		return "", "", false
+	}
+	return key, value, true
+}
+
+// hostLineName returns the argument text of a (trimmed) Host line: what
+// follows the keyword and its separator (blanks and at most one "=", which
+// ssh skips the same way), with trailing blanks removed and nothing else
+// touched (`Host "a b" # c` gives `"a b" # c`). For an ordinary "Host text"
+// line this is exactly what the parser stored in Host.Name before P2b. Write
+// emits "Host " + Name, which ssh reads exactly like the original line.
+func hostLineName(trimmed string) string {
+	_, value, _ := splitKeyword(trimmed)
+	return value
+}
+
+// isHostLine checks if a trimmed line is a Host directive: keyword "Host"
+// (case-insensitive) followed by blank(s) or '=' and a pattern list. Not
+// "HostName", "HostKeyAlgorithms" etc. (their keyword is longer).
+func isHostLine(line string) bool {
+	_, isHost, _ := blockLine(line)
+	return isHost
+}
+
+// parseKeyValue parses a "key value" (or "key=value") line and stores it in
+// the host.
+//
+// Repeated keys follow ssh: for scalar options the FIRST occurrence in the
+// block wins; IdentityFile and CertificateFile accumulate (the singular
+// field holds the first value, IdentityFiles / CertificateFiles all of them
+// in order); forwards and SendEnv accumulate.
 func parseKeyValue(h *domain.Host, line string) error {
-	// Split on first whitespace.
-	idx := strings.IndexAny(line, " \t")
-	if idx == -1 {
+	key, value, ok := splitKeyword(line)
+	if !ok {
 		return fmt.Errorf("malformed line: %q", line)
 	}
-
-	key := line[:idx]
-	value := strings.TrimSpace(line[idx+1:])
 	canonicalKey := canonicalKey(key)
+
+	// first stores value unless the option was already set earlier in the block.
+	first := func(dst *string) {
+		if *dst == "" {
+			*dst = value
+		}
+	}
 
 	switch canonicalKey {
 	case "HostName":
-		h.HostName = value
+		first(&h.HostName)
 	case "User":
-		h.User = value
+		first(&h.User)
 	case "Port":
-		h.Port = value
+		first(&h.Port)
 	case "IdentityFile":
-		h.IdentityFile = value
+		h.IdentityFiles = append(h.IdentityFiles, value)
+		first(&h.IdentityFile)
 	case "CertificateFile":
-		h.CertificateFile = value
+		h.CertificateFiles = append(h.CertificateFiles, value)
+		first(&h.CertificateFile)
 	case "ProxyJump":
-		h.ProxyJump = value
+		first(&h.ProxyJump)
 	case "ProxyCommand":
-		h.ProxyCommand = value
+		first(&h.ProxyCommand)
 	case "ForwardAgent":
-		h.ForwardAgent = value
+		// Not plain first-wins in ssh: yes/no and an agent socket path are
+		// two settings. After "ForwardAgent yes" a later "ForwardAgent
+		// <path>" still sets the path, and the two lines together are what
+		// "ForwardAgent <path>" alone is; so the path is the value to keep
+		// (the legacy writer has one line per option). In every other
+		// order ssh keeps the first line.
+		if isFlag, on := agentFlag(h.ForwardAgent); isFlag && on {
+			if later, _ := agentFlag(value); !later {
+				h.ForwardAgent = value
+			}
+			break
+		}
+		first(&h.ForwardAgent)
 	case "ForwardX11":
-		h.ForwardX11 = value
+		first(&h.ForwardX11)
 	case "StrictHostKeyChecking":
-		h.StrictHostKeyChecking = value
+		first(&h.StrictHostKeyChecking)
 	case "LogLevel":
-		h.LogLevel = value
+		first(&h.LogLevel)
 	case "HostKeyAlgorithms":
-		h.HostKeyAlgorithms = value
+		first(&h.HostKeyAlgorithms)
 	case "KexAlgorithms":
-		h.KexAlgorithms = value
+		first(&h.KexAlgorithms)
 	case "PubkeyAcceptedAlgorithms":
-		h.PubkeyAcceptedAlgorithms = value
+		first(&h.PubkeyAcceptedAlgorithms)
 	case "Ciphers":
-		h.Ciphers = value
+		first(&h.Ciphers)
 	case "MACs":
-		h.MACs = value
+		first(&h.MACs)
 	case "LocalForward":
 		h.LocalForwards = append(h.LocalForwards, normalizeForwardValue(value))
 	case "RemoteForward":
@@ -333,14 +489,40 @@ func parseKeyValue(h *domain.Host, line string) error {
 		if h.Extra == nil {
 			h.Extra = make(map[string]string)
 		}
+		// Unknown keys are matched case-insensitively (ssh keywords are).
+		// SendEnv is the one list-type option here: repeated lines
+		// accumulate. Any other repeated key keeps its first value, like ssh.
+		for k, cur := range h.Extra {
+			if !strings.EqualFold(k, canonicalKey) {
+				continue
+			}
+			if strings.EqualFold(k, "SendEnv") {
+				h.Extra[k] = cur + " " + value
+			}
+			return nil
+		}
 		h.Extra[canonicalKey] = value
 	}
 
-	if h.LineEnd == 0 {
-		h.LineEnd = 0 // will be set by flushHost
-	}
-
 	return nil
+}
+
+// agentFlag reports whether a ForwardAgent value is one of ssh's flag words
+// (yes, no, true, false; any case) rather than an agent socket path, and
+// whether it switches forwarding on. Only the first word counts: the legacy
+// parser keeps a trailing "# comment" in the value.
+func agentFlag(value string) (isFlag, on bool) {
+	words := SplitWords(value)
+	if len(words) == 0 {
+		return false, false
+	}
+	switch strings.ToLower(words[0]) {
+	case "yes", "true":
+		return true, true
+	case "no", "false":
+		return true, false
+	}
+	return false, false
 }
 
 // normalizeForwardValue collapses internal whitespace in a
