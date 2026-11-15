@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 
 	"github.com/adamdvorsky/ssh-tools/internal/domain"
 )
@@ -25,6 +24,16 @@ func (a *App) Copy(src, dst, rsyncFlags string) error {
 	}
 	if remote == "" {
 		return fmt.Errorf("neither source nor destination is a remote path — expected host:path or user@host:path")
+	}
+	// The remote goes on the rsync command line as a plain argument, and
+	// rsync hands its host on to ssh as one: neither may start with "-".
+	for _, p := range []string{src, dst} {
+		if !isRemotePath(p) {
+			continue
+		}
+		if err := checkRemoteArg(p); err != nil {
+			return err
+		}
 	}
 
 	// Gate: refuse remote targets whose host belongs to a disabled group.
@@ -58,7 +67,7 @@ func (a *App) Copy(src, dst, rsyncFlags string) error {
 	argv = append(argv, src, dst)
 	env := os.Environ()
 
-	if err := syscall.Exec(binary, argv, env); err != nil {
+	if err := execReplace(binary, argv, env); err != nil {
 		return fmt.Errorf("exec rsync: %w", err)
 	}
 
@@ -101,6 +110,31 @@ func isRemotePath(path string) bool {
 		return false
 	}
 	return true
+}
+
+// checkRemoteArg refuses a remote path ("host:path", "user@host:path") that
+// would be read as an option. Two places read it:
+//   - rsync reads the whole argument: "-e sh:x" is an rsync option;
+//   - rsync splits "user@host" and starts `ssh -l user host ...`, so the HOST
+//     part alone reaches ssh as an argument: "user@-oProxyCommand=x:path"
+//     would run a command. rsync takes the host after the LAST "@" and
+//     strips the brackets of "[host]" (the IPv6 form), so both are stripped
+//     here before the check.
+func checkRemoteArg(path string) error {
+	spec := hostFromPath(path)
+	if err := checkHostArg(spec); err != nil {
+		return err
+	}
+	return checkHostArg(remoteHostOnly(spec))
+}
+
+// remoteHostOnly returns the host of a "user@host" / "user@[host]" / "host"
+// spec as rsync passes it to ssh: without the user and without a leading "[".
+func remoteHostOnly(spec string) string {
+	if i := strings.LastIndex(spec, "@"); i >= 0 {
+		spec = spec[i+1:]
+	}
+	return strings.TrimPrefix(spec, "[")
 }
 
 // hostFromPath extracts the host part from a remote path like

@@ -10,19 +10,17 @@ import (
 //
 //  1. hosts must be in ssh evaluation order (file order, with Include
 //     directives already inlined at their position, as config.Load returns).
-//  2. Every block whose Host pattern line matches hostName applies (see
-//     matchPattern for the pattern syntax, including "!" negation).
+//  2. Every block whose Host pattern list (Host.PatternList: quotes and
+//     inline comments read as ssh reads them) matches hostName applies (see
+//     matchPatterns for the pattern syntax, including "!" negation).
 //  3. For scalar options the FIRST matching block that sets an option wins;
 //     later blocks only fill options that are still unset. So a "Host *"
 //     block placed before a specific block overrides it, exactly as in ssh.
 //  4. List-type options accumulate across all matching blocks, in order,
 //     de-duplicated by exact value: LocalForward, RemoteForward,
-//     DynamicForward and the SendEnv extra option.
-//
-// Known limitation: the Host model stores IdentityFile and CertificateFile as
-// single strings (the parser keeps the last line of a block), so here they are
-// first-wins although ssh accumulates them. Use MatchingHosts to see every
-// block's value.
+//     DynamicForward and the SendEnv extra option, plus IdentityFile /
+//     CertificateFile (IdentityFiles / CertificateFiles hold every value, the
+//     singular fields the first one).
 //
 // Match blocks are not modeled (the parser treats them as comments).
 func EffectiveConfig(hosts []Host, hostName string) (Host, error) {
@@ -44,7 +42,7 @@ func EffectiveConfig(hosts []Host, hostName string) (Host, error) {
 func MatchingHosts(hosts []Host, hostName string) []Host {
 	var out []Host
 	for _, h := range hosts {
-		if matchPattern(h.Name, hostName) {
+		if matchPatterns(h.PatternList(), hostName) {
 			out = append(out, h)
 		}
 	}
@@ -58,14 +56,22 @@ type errHostNotFound struct{}
 
 func (errHostNotFound) Error() string { return "host not found" }
 
-// matchPattern reports whether a Host pattern line applies to name, like
-// ssh's match_pattern_list: the line is a space-separated list of globs ("*"
-// any run, "?" one character); a "!"-prefixed entry is a negation. The line
-// applies iff at least one positive pattern matches and no negated pattern
-// matches. Matching is case-sensitive.
+// matchPattern reports whether a Host pattern line applies to name; the line
+// is a blank-separated list of patterns (see matchPatterns). It knows nothing
+// about quotes or inline comments: MatchingHosts uses Host.PatternList, which
+// does.
 func matchPattern(pattern, name string) bool {
+	return matchPatterns(strings.Fields(pattern), name)
+}
+
+// matchPatterns reports whether a Host pattern list applies to name, like
+// ssh's match_pattern_list: each pattern is a glob ("*" any run, "?" one
+// character); a "!"-prefixed entry is a negation. The list applies iff at
+// least one positive pattern matches and no negated pattern matches. Matching
+// is case-sensitive. An empty list ("Host # note") matches nothing.
+func matchPatterns(patterns []string, name string) bool {
 	matched := false
-	for _, p := range strings.Fields(pattern) {
+	for _, p := range patterns {
 		if neg, ok := strings.CutPrefix(p, "!"); ok {
 			if globMatch(neg, name) {
 				return false
@@ -117,8 +123,6 @@ func mergeHost(dst *Host, src Host) {
 	setIfEmpty(&dst.HostName, src.HostName)
 	setIfEmpty(&dst.User, src.User)
 	setIfEmpty(&dst.Port, src.Port)
-	setIfEmpty(&dst.IdentityFile, src.IdentityFile)       // ssh accumulates; see EffectiveConfig
-	setIfEmpty(&dst.CertificateFile, src.CertificateFile) // ssh accumulates; see EffectiveConfig
 	setIfEmpty(&dst.ProxyJump, src.ProxyJump)
 	setIfEmpty(&dst.ProxyCommand, src.ProxyCommand)
 	setIfEmpty(&dst.ForwardAgent, src.ForwardAgent)
@@ -145,6 +149,16 @@ func mergeHost(dst *Host, src Host) {
 		}
 		// Any other already-set Extra key: first wins. Keys keep their source
 		// casing, so differently-cased spellings of one option are not merged.
+	}
+
+	dst.IdentityFiles = appendUnique(dst.IdentityFileList(), src.IdentityFileList())
+	dst.CertificateFiles = appendUnique(dst.CertificateFileList(), src.CertificateFileList())
+	dst.IdentityFile, dst.CertificateFile = "", ""
+	if len(dst.IdentityFiles) > 0 {
+		dst.IdentityFile = dst.IdentityFiles[0]
+	}
+	if len(dst.CertificateFiles) > 0 {
+		dst.CertificateFile = dst.CertificateFiles[0]
 	}
 
 	dst.LocalForwards = appendUnique(dst.LocalForwards, src.LocalForwards)

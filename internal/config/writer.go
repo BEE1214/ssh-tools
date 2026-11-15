@@ -16,6 +16,17 @@ import (
 //   - One blank line between host blocks
 //
 // DevPod blocks are written with their marker comments and are not reformatted.
+//
+// Known losses (not fixed here; the managed file is edited through Doc):
+//   - a repeated Include or Match line inside one host block is lost: both
+//     are stored like options (Host.Extra), and only the first is kept;
+//   - text the parser found outside a host block is written at the top of
+//     the file. That includes an option line below a blank line of a block
+//     (for ssh still part of that block: it becomes a global option) and
+//     every Match block;
+//   - options come out in a fixed order. ssh takes whichever of ProxyJump
+//     and ProxyCommand stands first in a block; a block that has
+//     ProxyCommand first comes back with ProxyJump first.
 func Write(cfg *ConfigFile) ([]byte, error) {
 	var buf strings.Builder
 
@@ -100,6 +111,8 @@ func checkLineBreaks(h domain.Host) error {
 		h.StrictHostKeyChecking, h.LogLevel, h.HostKeyAlgorithms, h.KexAlgorithms,
 		h.PubkeyAcceptedAlgorithms, h.Ciphers, h.MACs,
 	}
+	values = append(values, h.IdentityFiles...)
+	values = append(values, h.CertificateFiles...)
 	values = append(values, h.LocalForwards...)
 	values = append(values, h.RemoteForwards...)
 	values = append(values, h.DynamicForwards...)
@@ -124,14 +137,16 @@ func writeHostBlock(buf *strings.Builder, h domain.Host) {
 	if h.User != "" {
 		fmt.Fprintf(buf, "  User %s\n", h.User)
 	}
-	if h.Port != "" && h.Port != "22" {
+	// Port is written whenever set, including 22: an explicit "Port 22" must
+	// not silently fall through to a later "Host * / Port 2200".
+	if h.Port != "" {
 		fmt.Fprintf(buf, "  Port %s\n", h.Port)
 	}
-	if h.IdentityFile != "" {
-		fmt.Fprintf(buf, "  IdentityFile %s\n", h.IdentityFile)
+	for _, f := range h.IdentityFileList() {
+		fmt.Fprintf(buf, "  IdentityFile %s\n", f)
 	}
-	if h.CertificateFile != "" {
-		fmt.Fprintf(buf, "  CertificateFile %s\n", h.CertificateFile)
+	for _, f := range h.CertificateFileList() {
+		fmt.Fprintf(buf, "  CertificateFile %s\n", f)
 	}
 	if h.ProxyJump != "" {
 		fmt.Fprintf(buf, "  ProxyJump %s\n", h.ProxyJump)
