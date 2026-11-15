@@ -98,6 +98,16 @@ name must not collide with a real host; doctor uses `sshm-doctor-probe`.
 - **Exit mechanism:** the command returns `errors.New(<summary line>)` with `SilenceErrors` so the summary appears once. Tests assert a non-nil error from `Execute` plus the stderr text.
 - **Streams:** issue lines and the summary go to stderr; `No issues found.` goes to stdout.
 
+## 5.2 Clarifications after the test round (binding)
+- **`Issue.File`:** empty for findings in the main file (as `validate` does), the exact path for any other file.
+- **`Issue.HostName`** for D7, D8, D9, D12, D13 is the block name as `validate` reports it (`*` for a wildcard block). `Line` for D7/D8/D9/D12 is the block start.
+- **D12** uses `Certificate.IsExpired` (there is no `domain.ValidateCertExpiry`).
+- **D5 "file evaluation order"** is the order of `Loaded.Files`.
+- **D9/D10 share `unsafe-permissions`;** the message tells them apart (key vs config file).
+- **Managed file that exists but is not included:** D11 applies (and D10); doctor reads its mode directly. An unconditional Include of a managed file that does not exist yet is not D14 (D14 is "no Include reaches it").
+- **D18/D20** suppress every ssh-derived finding (D19-D23 as applicable), not only the ones named.
+- Message fragments pinned by the tests: D9/D10/D11 path + octal mode (+ `chmod 600` for D9, D11); D17 contains `$HOME` and `ignores`; D19 contains `verify` and `not run`.
+
 ## 6. Decisions (Adam, 2026-11-15)
 1. `--diff` / `--fix`: not in this phase. Decide on fixes after reading real doctor findings.
 2. Linter severities kept: `missing-identity-file` and `unsafe-permissions` are errors.
