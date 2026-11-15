@@ -89,6 +89,7 @@ API: `App.Import(ImportOptions{Apply, Force}) (ImportResult, error)`.
 | I9 | Disabled groups: markers and the disabled state follow the blocks; sidecar entries for moved disabled groups move from `<main>.sshm-groups` to `<managed>.sshm-groups`; `groups` shows the same states before and after; `groups enable <g>` afterwards restores the original bytes. |
 | I10 | Both files are backed up to `sshm-backups/` before the write; managed mode 0600; main file mode and symlink-ness preserved. |
 | I11 | Write order: managed first, then main. If the main write fails the managed file is restored. A crash between the two steps leaves a host defined in both files, which ssh resolves identically (managed first) and `validate` reports as `dup-host-cross-file`. |
+| I11b | Resume after a crash: a block to move that already exists in the managed file with byte-identical raw lines (a previous `import --apply` crashed after the managed write) is NOT a conflict. `import --apply` completes the move by removing it from the main file without appending a duplicate; the plan lists it as a move and adds a note `resuming an interrupted import`. A block of the same name with DIFFERENT content stays an I6 conflict. After the resumed run both files and `ssh -G` equal the result of an uninterrupted import. |
 | I12 | Lost updates: if either file changes between planning and the write, abort with `ErrConflict`, nothing changed. |
 
 Dry-run output (stdout):
