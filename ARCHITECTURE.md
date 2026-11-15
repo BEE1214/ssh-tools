@@ -123,7 +123,7 @@ IDLE ──────"Host X"──────► IN_HOST
 - `IDLE`: accumulate comments/blank lines into CommentBlock.
 - `IN_HOST`: accumulate key-value pairs into current Host.
 - Comments inside a host block (between key-value lines) attach to that host as `InlineComments`.
-- `Host *` (wildcard) is parsed as a normal Host with `Name: "*"`. It's treated as defaults — the app layer applies it first when resolving effective config.
+- `Host *` (wildcard) is parsed as a normal Host with `Name: "*"`. It is not special-cased when resolving effective config: like every block it applies in file order, and since ssh is first-wins it only supplies true defaults when placed *after* the specific blocks. (`sshm init` therefore appends a new `Host *` as the last host block; an existing one is updated in place and, if other hosts follow it, `init` prints a note that its values override theirs.)
 
 Key normalization on parse: `user`, `User`, `USER` all become the canonical form for the struct field, but the writer stores the original casing to preserve round-trip fidelity. Actually — simpler: store canonical, write canonical. The `sshm validate` command flags mixed-case as info, and `sshm normalize` (or save in TUI) rewrites to canonical `HostName`, `User`, `Port`, etc. This is a one-time cleanup, not per-save.
 
@@ -206,9 +206,13 @@ This matches your naming convention well. Manual override via `# group: <name>` 
 **EffectiveConfig resolution:**
 
 Mirrors what `ssh -G <host>` does:
-1. Start with `Host *` block if present.
-2. Walk all Host blocks in order. For each block whose pattern matches the host name, apply/override its options.
-3. Return the merged Host.
+1. Walk all Host blocks in ssh evaluation order (file order, `Include`d files inlined at the `Include` line).
+2. A block applies if its pattern line matches the host name: `*` and `?` globs, space-separated alternatives, and `!pattern` negation (at least one positive pattern must match and no negated one may).
+3. **First match wins** for scalar options (User, Port, HostName, ...): a later block only fills options that are still unset. So a `Host *` block placed *before* a specific block overrides it, exactly as in ssh.
+4. List options accumulate across matching blocks, de-duplicated: `LocalForward`, `RemoteForward`, `DynamicForward`, `SendEnv`.
+5. Return the merged Host.
+
+Known limitation: `IdentityFile` / `CertificateFile` are single-valued in the Host model (ssh accumulates them), so they are first-wins here. `Match` blocks are not modeled.
 
 This is used by `sshm dump <host>`. It's also used by the TUI edit view to show the effective config for a host that inherits from `Host *`.
 
@@ -246,7 +250,7 @@ app/
   duplicate.go  DuplicateHost(srcName, newName string) -> error
   connect.go    Connect(name string) -> error    // exec ssh
   validate.go   Validate() -> []Issue
-  init.go       InitDefaults() -> error          // generate/repair Host * block
+  init.go       InitDefaults() -> (note, error)  // append/repair Host * block (last; existing updated in place)
   dump.go       Dump(name string) -> (Host, error)
 ```
 

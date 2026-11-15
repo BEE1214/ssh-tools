@@ -1,40 +1,52 @@
 package domain
 
 import (
+	"slices"
 	"strings"
 )
 
-// EffectiveConfig resolves the effective SSH options for a given host name
-// by applying Host blocks in order, mirroring what `ssh -G <host>` does.
+// EffectiveConfig resolves the effective SSH options for a given host name,
+// mirroring what `ssh -G <host>` does (ssh_config(5)):
 //
-// 1. Start with the Host * block if present.
-// 2. Walk all Host blocks in file order.
-// 3. For each block whose pattern matches the host name, apply/override its options.
-// 4. Return the merged Host.
+//  1. hosts must be in ssh evaluation order (file order, with Include
+//     directives already inlined at their position, as config.Load returns).
+//  2. Every block whose Host pattern list (Host.PatternList: quotes and
+//     inline comments read as ssh reads them) matches hostName applies (see
+//     matchPatterns for the pattern syntax, including "!" negation).
+//  3. For scalar options the FIRST matching block that sets an option wins;
+//     later blocks only fill options that are still unset. So a "Host *"
+//     block placed before a specific block overrides it, exactly as in ssh.
+//  4. List-type options accumulate across all matching blocks, in order,
+//     de-duplicated by exact value: LocalForward, RemoteForward,
+//     DynamicForward and the SendEnv extra option, plus IdentityFile /
+//     CertificateFile (IdentityFiles / CertificateFiles hold every value, the
+//     singular fields the first one).
+//
+// Match blocks are not modeled (the parser treats them as comments).
 func EffectiveConfig(hosts []Host, hostName string) (Host, error) {
-	var result Host
-	found := false
-
-	for _, h := range hosts {
-		if !matchPattern(h.Name, hostName) {
-			continue
-		}
-
-		if !found {
-			result = Host{Name: hostName}
-			found = true
-		}
-
-		mergeHost(&result, h)
-	}
-
-	if !found {
+	matching := MatchingHosts(hosts, hostName)
+	if len(matching) == 0 {
 		return Host{}, ErrHostNotFound
 	}
 
-	// Set the Name to the requested host name, not the pattern.
+	result := Host{Name: hostName}
+	for _, h := range matching {
+		mergeHost(&result, h)
+	}
 	result.Name = hostName
 	return result, nil
+}
+
+// MatchingHosts returns, in the given (evaluation) order, the blocks whose
+// Host pattern line applies to hostName.
+func MatchingHosts(hosts []Host, hostName string) []Host {
+	var out []Host
+	for _, h := range hosts {
+		if matchPatterns(h.PatternList(), hostName) {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // ErrHostNotFound is returned when no Host block matches the given name.
@@ -44,122 +56,122 @@ type errHostNotFound struct{}
 
 func (errHostNotFound) Error() string { return "host not found" }
 
-// matchPattern checks if an SSH Host pattern matches a host name.
-// Supports:
-//   - "*" (matches everything)
-//   - single wildcard "*" at end (prefix match)
-//   - exact match
-//   - multiple patterns separated by spaces
+// matchPattern reports whether a Host pattern line applies to name; the line
+// is a blank-separated list of patterns (see matchPatterns). It knows nothing
+// about quotes or inline comments: MatchingHosts uses Host.PatternList, which
+// does.
 func matchPattern(pattern, name string) bool {
-	for _, p := range strings.Fields(pattern) {
-		if p == "*" {
-			return true
-		}
-		if strings.Contains(p, "*") {
-			if wildcardMatch(p, name) {
-				return true
+	return matchPatterns(strings.Fields(pattern), name)
+}
+
+// matchPatterns reports whether a Host pattern list applies to name, like
+// ssh's match_pattern_list: each pattern is a glob ("*" any run, "?" one
+// character); a "!"-prefixed entry is a negation. The list applies iff at
+// least one positive pattern matches and no negated pattern matches. Matching
+// is case-sensitive. An empty list ("Host # note") matches nothing.
+func matchPatterns(patterns []string, name string) bool {
+	matched := false
+	for _, p := range patterns {
+		if neg, ok := strings.CutPrefix(p, "!"); ok {
+			if globMatch(neg, name) {
+				return false
 			}
 			continue
 		}
-		if p == name {
-			return true
+		if globMatch(p, name) {
+			matched = true
 		}
 	}
-	return false
+	return matched
 }
 
-// wildcardMatch does glob-style matching with "*".
-func wildcardMatch(pattern, name string) bool {
-	parts := strings.Split(pattern, "*")
-	if len(parts) == 1 {
-		return pattern == name
-	}
-
-	// First part must be a prefix.
-	if !strings.HasPrefix(name, parts[0]) {
-		return false
-	}
-	name = name[len(parts[0]):]
-
-	// Last part must be a suffix.
-	last := parts[len(parts)-1]
-	if last != "" && !strings.HasSuffix(name, last) {
-		return false
-	}
-	name = name[:len(name)-len(last)]
-
-	// Middle parts must appear in order.
-	for i := 1; i < len(parts)-1; i++ {
-		idx := strings.Index(name, parts[i])
-		if idx == -1 {
+// globMatch matches name against a pattern with "*" and "?" wildcards.
+func globMatch(pattern, name string) bool {
+	p, n := 0, 0
+	star, mark := -1, 0
+	for n < len(name) {
+		switch {
+		case p < len(pattern) && pattern[p] == '*':
+			star, mark = p, n
+			p++
+		case p < len(pattern) && (pattern[p] == '?' || pattern[p] == name[n]):
+			p++
+			n++
+		case star >= 0:
+			mark++
+			n = mark
+			p = star + 1
+		default:
 			return false
 		}
-		name = name[idx+len(parts[i]):]
 	}
-
-	return true
+	for p < len(pattern) && pattern[p] == '*' {
+		p++
+	}
+	return p == len(pattern)
 }
 
-// mergeHost applies all non-empty fields from src onto dst.
+// mergeHost folds src (a later matching block) into dst: scalar options are
+// only taken if dst has not set them yet (first wins, like ssh); list options
+// are appended with exact-value de-duplication.
 func mergeHost(dst *Host, src Host) {
-	if src.HostName != "" {
-		dst.HostName = src.HostName
+	setIfEmpty := func(d *string, s string) {
+		if *d == "" {
+			*d = s
+		}
 	}
-	if src.User != "" {
-		dst.User = src.User
-	}
-	if src.Port != "" {
-		dst.Port = src.Port
-	}
-	if src.IdentityFile != "" {
-		dst.IdentityFile = src.IdentityFile
-	}
-	if src.CertificateFile != "" {
-		dst.CertificateFile = src.CertificateFile
-	}
-	if src.ProxyJump != "" {
-		dst.ProxyJump = src.ProxyJump
-	}
-	if src.ProxyCommand != "" {
-		dst.ProxyCommand = src.ProxyCommand
-	}
-	if src.ForwardAgent != "" {
-		dst.ForwardAgent = src.ForwardAgent
-	}
-	if src.ForwardX11 != "" {
-		dst.ForwardX11 = src.ForwardX11
-	}
-	if src.StrictHostKeyChecking != "" {
-		dst.StrictHostKeyChecking = src.StrictHostKeyChecking
-	}
-	if src.LogLevel != "" {
-		dst.LogLevel = src.LogLevel
-	}
-	if src.HostKeyAlgorithms != "" {
-		dst.HostKeyAlgorithms = src.HostKeyAlgorithms
-	}
-	if src.KexAlgorithms != "" {
-		dst.KexAlgorithms = src.KexAlgorithms
-	}
-	if src.PubkeyAcceptedAlgorithms != "" {
-		dst.PubkeyAcceptedAlgorithms = src.PubkeyAcceptedAlgorithms
-	}
-	if src.Ciphers != "" {
-		dst.Ciphers = src.Ciphers
-	}
-	if src.MACs != "" {
-		dst.MACs = src.MACs
-	}
+	setIfEmpty(&dst.HostName, src.HostName)
+	setIfEmpty(&dst.User, src.User)
+	setIfEmpty(&dst.Port, src.Port)
+	setIfEmpty(&dst.ProxyJump, src.ProxyJump)
+	setIfEmpty(&dst.ProxyCommand, src.ProxyCommand)
+	setIfEmpty(&dst.ForwardAgent, src.ForwardAgent)
+	setIfEmpty(&dst.ForwardX11, src.ForwardX11)
+	setIfEmpty(&dst.StrictHostKeyChecking, src.StrictHostKeyChecking)
+	setIfEmpty(&dst.LogLevel, src.LogLevel)
+	setIfEmpty(&dst.HostKeyAlgorithms, src.HostKeyAlgorithms)
+	setIfEmpty(&dst.KexAlgorithms, src.KexAlgorithms)
+	setIfEmpty(&dst.PubkeyAcceptedAlgorithms, src.PubkeyAcceptedAlgorithms)
+	setIfEmpty(&dst.Ciphers, src.Ciphers)
+	setIfEmpty(&dst.MACs, src.MACs)
+
 	for k, v := range src.Extra {
 		if dst.Extra == nil {
 			dst.Extra = make(map[string]string)
 		}
-		dst.Extra[k] = v
+		cur, ok := dst.Extra[k]
+		switch {
+		case !ok:
+			dst.Extra[k] = v
+		case strings.EqualFold(k, "SendEnv"):
+			// SendEnv is a list option: accumulate patterns, de-duplicated.
+			dst.Extra[k] = strings.Join(appendUnique(strings.Fields(cur), strings.Fields(v)), " ")
+		}
+		// Any other already-set Extra key: first wins. Keys keep their source
+		// casing, so differently-cased spellings of one option are not merged.
 	}
 
-	// Port-forwarding options are repeated, so matching blocks accumulate
-	// rather than override (unlike the single-value fields above).
-	dst.LocalForwards = append(dst.LocalForwards, src.LocalForwards...)
-	dst.RemoteForwards = append(dst.RemoteForwards, src.RemoteForwards...)
-	dst.DynamicForwards = append(dst.DynamicForwards, src.DynamicForwards...)
+	dst.IdentityFiles = appendUnique(dst.IdentityFileList(), src.IdentityFileList())
+	dst.CertificateFiles = appendUnique(dst.CertificateFileList(), src.CertificateFileList())
+	dst.IdentityFile, dst.CertificateFile = "", ""
+	if len(dst.IdentityFiles) > 0 {
+		dst.IdentityFile = dst.IdentityFiles[0]
+	}
+	if len(dst.CertificateFiles) > 0 {
+		dst.CertificateFile = dst.CertificateFiles[0]
+	}
+
+	dst.LocalForwards = appendUnique(dst.LocalForwards, src.LocalForwards)
+	dst.RemoteForwards = appendUnique(dst.RemoteForwards, src.RemoteForwards)
+	dst.DynamicForwards = appendUnique(dst.DynamicForwards, src.DynamicForwards)
+}
+
+// appendUnique appends the entries of add not already present in dst.
+func appendUnique(dst, add []string) []string {
+	for _, a := range add {
+		if !slices.Contains(dst, a) {
+			dst = append(dst, a)
+		}
+	}
+	return dst
 }

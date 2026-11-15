@@ -124,18 +124,18 @@ func (a *App) SignCert(opts SignOpts) (string, error) {
 
 	if pubKeyPath == "" && opts.HostName != "" {
 		// Look up the host in ssh config.
-		cfg, err := a.load()
+		l, err := a.loadAll()
 		if err != nil {
 			return "", fmt.Errorf("load config: %w", err)
 		}
-		if err := a.ensureNotDisabled(cfg, opts.HostName); err != nil {
+		if err := a.ensureHostNotDisabled(l.Hosts, opts.HostName); err != nil {
 			return "", err
 		}
-		idx := findHostIndex(cfg.Hosts, opts.HostName)
+		idx := findHostIndex(l.Hosts, opts.HostName)
 		if idx == -1 {
 			return "", fmt.Errorf("host %q not found in config", opts.HostName)
 		}
-		h := cfg.Hosts[idx]
+		h := l.Hosts[idx]
 		if h.IdentityFile == "" {
 			return "", fmt.Errorf("host %q has no IdentityFile — cannot sign", opts.HostName)
 		}
@@ -270,17 +270,29 @@ func (a *App) RevokeCert(path string) error {
 		return fmt.Errorf("cert file not found: %w", err)
 	}
 
-	// Read cert info to get the identity (which may match a host name).
-	cert, err := a.InspectCert(path)
-	if err == nil && cert.Identity != "" {
-		// Try to remove CertificateFile from the matching host config block.
-		cfg, loadErr := a.load()
-		if loadErr == nil {
-			for _, h := range cfg.Hosts {
-				if h.CertificateFile == path || h.Name == cert.Identity {
-					_ = a.ClearCertificateFile(h.Name)
-					break
-				}
+	// Identity (which may match a host name) is only known if ssh-keygen can
+	// read the cert. The CertificateFile lookup below must not depend on it.
+	identity := ""
+	if cert, err := a.InspectCert(path); err == nil {
+		identity = cert.Identity
+	}
+
+	// Look the host up across the main file AND included files, so a cert
+	// referenced from an included host is not silently orphaned.
+	l, err := a.loadAll()
+	if err != nil {
+		return fmt.Errorf("cert file not deleted: cannot check which host references it: %w", err)
+	}
+	target := filepath.Clean(expandTilde(path))
+	for _, h := range l.Hosts {
+		byFile := h.CertificateFile != "" && filepath.Clean(expandTilde(h.CertificateFile)) == target
+		byIdentity := identity != "" && h.Name == identity
+		if byFile || byIdentity {
+			// If the CertificateFile line cannot be cleared (host defined in
+			// an included file, disabled, ...) keep the cert file: deleting
+			// it would leave a dangling CertificateFile line behind.
+			if err := a.ClearCertificateFile(h.Name); err != nil {
+				return fmt.Errorf("cert file not deleted: cannot clear CertificateFile of host %q: %w", h.Name, err)
 			}
 		}
 	}
@@ -297,6 +309,9 @@ func (a *App) RevokeCert(path string) error {
 // setting it to empty and saving. This is used by RevokeCert since EditHost
 // with an empty map is a no-op.
 func (a *App) ClearCertificateFile(name string) error {
+	if err := a.ensureInMain(name); err != nil {
+		return err
+	}
 	cfg, err := a.load()
 	if err != nil {
 		return err
@@ -310,7 +325,8 @@ func (a *App) ClearCertificateFile(name string) error {
 		return err
 	}
 
-	cfg.Hosts[idx].CertificateFile = ""
+	// Every CertificateFile line of the block goes, not only the first.
+	cfg.Hosts[idx].CertificateFile, cfg.Hosts[idx].CertificateFiles = singleFile("")
 	return a.save(cfg)
 }
 

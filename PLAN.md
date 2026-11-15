@@ -152,7 +152,7 @@ Manual override via `# group: <name>` comment in config. Hosts without a detecta
 
 ## Security improvements (built into `sshm init`)
 
-`sshm init` generates or repairs a `Host *` block at the top of config:
+`sshm init` generates or repairs a `Host *` block at the END of config (ssh uses the first value found, so a catch-all `Host *` must come after the specific hosts; an existing block is updated in place and, if it precedes other hosts, a note is printed):
 
 ```
 Host *
@@ -165,8 +165,8 @@ Host *
     HashKnownHosts yes
     StrictHostKeyChecking accept-new
 
-    # Post-quantum + modern KEX
-    KexAlgorithms mlkem768x25519-sha256@openssh.com,sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org
+    # Post-quantum + modern KEX (example for a recent OpenSSH; see below)
+    KexAlgorithms mlkem768x25519-sha256,sntrup761x25519-sha512,curve25519-sha256,curve25519-sha256@libssh.org
 
     # Strong host key algorithms
     HostKeyAlgorithms ssh-ed25519,ssh-ed25519-cert-v01@openssh.com,rsa-sha2-512,rsa-sha2-256
@@ -176,11 +176,14 @@ Host *
     MACs hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com
 ```
 
+The four algorithm lists are NOT fixed. They are preference lists filtered through what the local ssh supports (`ssh -Q kex`, `cipher`, `mac`, `key-sig`): names ssh does not know are dropped, the preference order is kept (`sntrup761x25519-sha512` falls back to its `@openssh.com` alias on older builds). ssh aborts on the whole config for one unknown algorithm name ("Bad SSH2 KexAlgorithms ... terminating"), so if `ssh -Q` fails, ssh is not found, or no name survives, that option is left out entirely and OpenSSH's defaults apply; unverified names are never written. Note the post-quantum hybrid is `mlkem768x25519-sha256` (OpenSSH >= 9.9) — there is no `@openssh.com` form of it.
+
 `sshm validate` checks:
 - Missing IdentityFile (warn)
 - `StrictHostKeyChecking no` (warn — suggest `accept-new`)
 - Duplicate keys within a block (error)
 - Duplicate host names (error)
+- `bad-algorithm` (error): a name in KexAlgorithms / Ciphers / MACs / HostKeyAlgorithms / PubkeyAcceptedAlgorithms that the local `ssh -Q` does not list (leading `+`/`-`/`^` and `*` wildcards are understood; skipped silently when `ssh -Q` is unavailable)
 - Mixed case keys (info — normalize)
 - Missing User (warn)
 

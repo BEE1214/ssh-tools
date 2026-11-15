@@ -1,22 +1,26 @@
 package app
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/adamdvorsky/ssh-tools/internal/domain"
 )
 
-// InitDefaults generates or repairs the Host * defaults block at the top
-// of the config file. If a Host * block already exists, it is replaced.
-func (a *App) InitDefaults() error {
+// InitDefaults generates or repairs the Host * defaults block of the config
+// file. A new block is appended as the LAST host block: ssh uses the first
+// value found for each option, so a catch-all Host * only supplies defaults
+// when it comes after the specific hosts. An existing Host * block is
+// replaced in place and never moved; if other hosts follow it (in file order,
+// included files inlined), the returned note says its values override theirs.
+func (a *App) InitDefaults() (note string, err error) {
 	cfg, err := a.load()
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	defaults := defaultHost()
 
-	// Find and replace existing Host * block, or prepend.
 	found := false
 	for i, h := range cfg.Hosts {
 		if h.IsWildcard() {
@@ -25,32 +29,70 @@ func (a *App) InitDefaults() error {
 			break
 		}
 	}
-
 	if !found {
-		// Prepend Host * at the beginning.
-		cfg.Hosts = append([]domain.Host{defaults}, cfg.Hosts...)
+		cfg.Hosts = append(cfg.Hosts, defaults)
 	}
+	if err := a.save(cfg); err != nil {
+		return "", err
+	}
+	if found {
+		// After the save, so the reported line is the one in the file now.
+		note = a.misplacedWildcardNote()
+	}
+	return note, nil
+}
 
-	return a.save(cfg)
+// misplacedWildcardNote reports a Host * block of the main file that is
+// followed by other host blocks. Best effort: "" if the config cannot be
+// loaded with its includes.
+func (a *App) misplacedWildcardNote() string {
+	l, err := a.loadAll()
+	if err != nil {
+		return ""
+	}
+	for i, h := range l.Hosts {
+		if h.Name != "*" || h.SourceFile != l.MainPath() || i == len(l.Hosts)-1 {
+			continue
+		}
+		return fmt.Sprintf("Host * is at line %d, before other hosts; its values override theirs (ssh uses the first value found). Move it to the end.", h.LineStart)
+	}
+	return ""
 }
 
 // defaultHost returns the recommended Host * block with security and
 // keepalive defaults.
 func defaultHost() domain.Host {
 	return domain.Host{
-		Name:                     "*",
-		Source:                   domain.SourceManual,
-		StrictHostKeyChecking:    "accept-new",
+		Name:                  "*",
+		Source:                domain.SourceManual,
+		StrictHostKeyChecking: "accept-new",
 		Extra: map[string]string{
 			"ServerAliveInterval": "60",
-			"ServerAliveCountMax":  "3",
+			"ServerAliveCountMax": "3",
 			"IdentitiesOnly":      "yes",
 			"HashKnownHosts":      "yes",
 		},
-		KexAlgorithms:           "mlkem768x25519-sha256@openssh.com,sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org",
-		HostKeyAlgorithms:        "ssh-ed25519,ssh-ed25519-cert-v01@openssh.com,rsa-sha2-512,rsa-sha2-256",
-		Ciphers:                  "chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com",
-		MACs:                     "hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com",
+		// Algorithm lists are preference lists filtered through what the local
+		// ssh supports (ssh -Q). An unknown name makes ssh abort on the whole
+		// config, so a list that cannot be verified is left out entirely and
+		// OpenSSH's own defaults apply.
+		KexAlgorithms: preferred(queryKex,
+			"mlkem768x25519-sha256",
+			"sntrup761x25519-sha512|sntrup761x25519-sha512@openssh.com",
+			"curve25519-sha256",
+			"curve25519-sha256@libssh.org"),
+		HostKeyAlgorithms: preferred(queryKeySig,
+			"ssh-ed25519",
+			"ssh-ed25519-cert-v01@openssh.com",
+			"rsa-sha2-512",
+			"rsa-sha2-256"),
+		Ciphers: preferred(queryCipher,
+			"chacha20-poly1305@openssh.com",
+			"aes256-gcm@openssh.com",
+			"aes128-gcm@openssh.com"),
+		MACs: preferred(queryMAC,
+			"hmac-sha2-256-etm@openssh.com",
+			"hmac-sha2-512-etm@openssh.com"),
 	}
 }
 

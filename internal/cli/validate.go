@@ -26,7 +26,12 @@ func newValidateCmd() *cobra.Command {
 
 			for _, i := range issues {
 				location := ""
-				if i.Line > 0 {
+				switch {
+				case i.File != "" && i.Line > 0:
+					location = fmt.Sprintf(" (%s line %d)", i.File, i.Line)
+				case i.File != "":
+					location = fmt.Sprintf(" (%s)", i.File)
+				case i.Line > 0:
 					location = fmt.Sprintf(" (line %d)", i.Line)
 				}
 				if i.HostName != "" {
@@ -115,10 +120,22 @@ func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Generate or repair the Host * defaults block",
+		Long: `Generate or repair the hardened Host * defaults block (keepalive,
+StrictHostKeyChecking accept-new, modern KEX/ciphers/MACs).
+
+A new block is appended as the LAST host block of the config: ssh uses the
+first value found for each option, so a catch-all Host * only supplies
+defaults when it comes after your specific hosts. An existing Host * block is
+replaced in place and not moved; if other hosts follow it, a note is printed
+because its values then override theirs.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a := newApp()
-			if err := a.InitDefaults(); err != nil {
+			note, err := a.InitDefaults()
+			if err != nil {
 				return err
+			}
+			if note != "" {
+				fmt.Fprintln(os.Stderr, "note: "+note)
 			}
 			fmt.Fprintf(os.Stderr, "Host * defaults block written to %s\n", a.ConfigPath())
 			return nil

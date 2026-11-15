@@ -144,6 +144,8 @@ func (m *Model) hostForChange() (row, bool) {
 		m.setToast(disabledMsg(r), true)
 	case r.readOnly():
 		m.setToast(r.host.Name+" is read-only (managed by DevPod)", true)
+	case r.included:
+		m.setToast(fmt.Sprintf("host %q is defined in %s (included), which sshm cannot edit yet", r.host.Name, r.host.SourceFile), true)
 	default:
 		return r, true
 	}

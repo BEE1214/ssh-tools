@@ -5,9 +5,10 @@ import (
 )
 
 func TestEffectiveConfig_ExactMatch(t *testing.T) {
+	// Specific block first, "Host *" defaults after (ssh is first-wins).
 	hosts := []Host{
-		{Name: "*", User: "default-user", Port: "22"},
 		{Name: "emil", HostName: "10.0.0.1", User: "adam", IdentityFile: "~/.ssh/id_ed25519"},
+		{Name: "*", User: "default-user", Port: "22"},
 	}
 	result, err := EffectiveConfig(hosts, "emil")
 	if err != nil {
@@ -49,7 +50,9 @@ func TestEffectiveConfig_NotFound(t *testing.T) {
 }
 
 func TestEffectiveConfig_OverrideOrder(t *testing.T) {
-	// Later matching blocks should override earlier ones.
+	// ssh is FIRST-wins: the earliest matching block that sets an option
+	// keeps it; later blocks only fill options that are still unset.
+	// (This test used to assert last-wins, which did not match ssh.)
 	hosts := []Host{
 		{Name: "*", Port: "22"},
 		{Name: "host-*", Port: "20008"},
@@ -59,8 +62,8 @@ func TestEffectiveConfig_OverrideOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Port != "20008" {
-		t.Errorf("Port = %q, want 20008", result.Port)
+	if result.Port != "22" {
+		t.Errorf("Port = %q, want 22 (first match wins)", result.Port)
 	}
 	if result.User != "root" {
 		t.Errorf("User = %q, want root", result.User)
