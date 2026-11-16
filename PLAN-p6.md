@@ -76,6 +76,12 @@ type Snapshot struct {
 - **`CheckEdit` issue `Line`/`File`** are those `domain.Validate` gives for the loaded managed host.
 - The port field has no validation in the form (`Port notaport` reaches the app and is rolled back by the ssh verify step, T14).
 
+## 4.2 Follow-up clauses (review round, 2026-11-16)
+| ID | Clause |
+|---|---|
+| T17 | **Toast wrapping.** A toast longer than the terminal width wraps onto extra lines (at most 3, each at most the terminal width) instead of being clipped; the whole text stays visible in `View().Content` (e.g. the `run 'sshm import'` tail of a 95-character refusal at width 80). The view still has at most `height` lines in every mode. Short toasts occupy one line as before. |
+| T18 | **Managed file that cannot be loaded.** `Snapshot.ManagedProblem string` (new field) is non-empty exactly when a loaded file has an UNCONDITIONAL `Include` that reaches the managed path, the managed file exists, and it could not be loaded (unreadable or unparsable): the text names the managed path and the load warning. In that state `Managed` is false, the TUI edit keys (`e`/`n`/`d`/`D`) show the error toast `editing disabled: <ManagedProblem>` instead of the "needs setup" text, and the write routing is unchanged. A missing managed file (never created) and the plain no-Include case leave `ManagedProblem` empty and keep the T8 toast. |
+
 ## 5. Test notes
 - TUI tests build their fixture with a helper that writes a temp main config with an absolute
   `Include <tmp>/config.d/sshm.conf` as first line, a managed file holding the editable hosts, and main-file

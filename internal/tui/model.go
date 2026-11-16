@@ -59,6 +59,10 @@ type Model struct {
 	// file); reload re-evaluates it. A failed reload keeps the previous values.
 	managed     bool
 	managedPath string
+	// managedProblem is Snapshot.ManagedProblem: a managed file that ssh reads
+	// but sshm cannot load. Editing is then disabled with that text instead of
+	// the "needs setup" hint.
+	managedProblem string
 
 	toast    string // one-line feedback, cleared on the next key
 	toastErr bool

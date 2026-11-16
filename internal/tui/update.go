@@ -89,6 +89,10 @@ func (m Model) updateList(k tea.KeyPressMsg) (Model, tea.Cmd) {
 	case "e", "n", "d", "D":
 		if !m.managed {
 			// Legacy mode: no TUI write may reach the lossy legacy writer.
+			if m.managedProblem != "" {
+				m.setToast("editing disabled: "+m.managedProblem, true)
+				return m, nil
+			}
 			m.setToast("editing needs setup: run 'sshm setup' to create "+m.managedPath, true)
 			return m, nil
 		}

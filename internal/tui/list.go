@@ -47,6 +47,7 @@ func (m *Model) reload() {
 	m.issues = snap.Issues
 	m.managed = snap.Managed
 	m.managedPath = snap.ManagedPath
+	m.managedProblem = snap.ManagedProblem
 	m.rebuild()
 }
 

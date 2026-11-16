@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/adamdvorsky/ssh-tools/internal/config"
@@ -36,6 +37,12 @@ type Snapshot struct {
 	Managed bool
 	// ManagedPath is App.ManagedPath().
 	ManagedPath string
+	// ManagedProblem is non-empty exactly when a loaded file has an
+	// UNCONDITIONAL Include that reaches ManagedPath, the managed file exists
+	// and it could not be loaded (unreadable or unparsable). The text names the
+	// managed path and the load warning. Managed is false then; a missing
+	// managed file and a missing Include leave it empty.
+	ManagedProblem string
 }
 
 // Snapshot reads the config once and returns all hosts with their gate state
@@ -56,6 +63,9 @@ func (a *App) Snapshot() (Snapshot, error) {
 		Managed:     v != nil,
 		ManagedPath: a.ManagedPath(),
 	}
+	if v == nil {
+		snap.ManagedProblem = managedLoadProblem(l, snap.ManagedPath)
+	}
 	for _, h := range l.Hosts {
 		snap.Hosts = append(snap.Hosts, HostEntry{
 			Host:           h,
@@ -65,6 +75,70 @@ func (a *App) Snapshot() (Snapshot, error) {
 		})
 	}
 	return snap, nil
+}
+
+// managedLoadProblem explains why ssh reads the managed file while sshm could
+// not load it: an unconditional Include reaches it (managedIncludeState), the
+// file exists, and it is not among the loaded files, so Load recorded a
+// warning for it (unreadable or unparsable). "" in every other case: a missing
+// file (never created), no Include, or a conditional Include.
+func managedLoadProblem(l *config.Loaded, managed string) string {
+	if state, _ := managedIncludeState(l, managed); state != includeUnconditional {
+		return ""
+	}
+	if _, err := os.Stat(managed); os.IsNotExist(err) {
+		return ""
+	}
+	warning := ""
+	for _, w := range l.Warnings {
+		if strings.Contains(w, "include "+managed+":") {
+			warning = w
+			break
+		}
+	}
+	if warning == "" {
+		// Spelled differently (symlinks, ~): name the first blind spot instead.
+		if len(l.Unfollowed) > 0 {
+			warning = l.Unfollowed[0]
+		} else {
+			warning = "not loaded"
+		}
+	}
+	return fmt.Sprintf("managed file cannot be loaded (%s): %s", shortLoadReason(warning, managed), managed)
+}
+
+// shortLoadReason strips the "<from>:<line>: cannot parse include <path>:"
+// prefix(es) from a load warning so the reason does not repeat the (long)
+// managed path. A reason that still contains the path is cut before it; when
+// nothing useful remains the warning is returned as is.
+func shortLoadReason(warning, managed string) string {
+	reason := warning
+	marker := "include " + managed + ":"
+	for {
+		i := strings.Index(reason, marker)
+		if i < 0 {
+			break
+		}
+		reason = strings.TrimSpace(reason[i+len(marker):])
+	}
+	if i := strings.Index(reason, managed); i >= 0 {
+		reason = strings.TrimRight(strings.TrimSpace(reason[:i]), ": ")
+	}
+	// Keep the first sentence only (up to the first ": " outside quotes), so the
+	// text stays short enough to wrap onto few lines beside the path.
+	inQuote := false
+	for i := 0; i+1 < len(reason); i++ {
+		if reason[i] == '"' {
+			inQuote = !inQuote
+		} else if !inQuote && reason[i] == ':' && reason[i+1] == ' ' {
+			reason = reason[:i]
+			break
+		}
+	}
+	if reason == "" {
+		return warning
+	}
+	return reason
 }
 
 // readOnlyReason is the refusal a write to name would return (guardWrite, on

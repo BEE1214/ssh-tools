@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/adamdvorsky/ssh-tools/internal/domain"
 )
@@ -44,16 +45,45 @@ func (m Model) listView() string {
 	return m.frame(lines, m.statusLine(), m.hintsLine())
 }
 
+// maxStatusLines is how many lines a status text (a toast) may wrap onto.
+const maxStatusLines = 3
+
+// wrapStatus wraps a status text wider than w onto at most limit lines, each
+// at most w cells; text that does not fit in limit lines ends in "…". Text
+// that fits stays one line, unchanged.
+func wrapStatus(s string, w, limit int) []string {
+	w = max(w, 1)
+	if lipgloss.Width(s) <= w {
+		return []string{s}
+	}
+	lines := strings.Split(lipgloss.NewStyle().Width(w).Render(s), "\n")
+	if len(lines) > limit {
+		// Word wrapping wastes the ragged line ends (and puts a long path on
+		// lines of its own): pack the text tightly before giving up on it.
+		lines = strings.Split(ansi.Hardwrap(s, w, true), "\n")
+		if len(lines) <= limit {
+			return lines
+		}
+		lines = lines[:limit]
+		lines[limit-1] = fit(lines[limit-1], w-1) + "…"
+	}
+	return lines
+}
+
 // frame pads body lines to the body height, appends the footer and fits
-// every line to the window width.
+// every line to the window width. A status wider than the window wraps onto
+// extra footer lines (taken from the body), so the whole text stays visible
+// and the view never exceeds the window height.
 func (m Model) frame(head []string, status, hints string) string {
-	room := max(0, m.height-2)
+	statusLines := wrapStatus(status, m.width, min(maxStatusLines, max(1, m.height-1)))
+	room := max(0, m.height-1-len(statusLines))
 	lines := make([]string, 0, m.height)
 	lines = append(lines, head[:min(len(head), room)]...)
 	for len(lines) < room {
 		lines = append(lines, "")
 	}
-	lines = append(lines, status, hints)
+	lines = append(lines, statusLines...)
+	lines = append(lines, hints)
 	if m.height < 2 { // degenerate window: show hints only
 		lines = []string{hints}
 	}
