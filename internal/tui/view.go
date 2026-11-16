@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/adamdvorsky/ssh-tools/internal/domain"
 )
@@ -44,16 +45,45 @@ func (m Model) listView() string {
 	return m.frame(lines, m.statusLine(), m.hintsLine())
 }
 
+// maxStatusLines is how many lines a status text (a toast) may wrap onto.
+const maxStatusLines = 3
+
+// wrapStatus wraps a status text wider than w onto at most limit lines, each
+// at most w cells; text that does not fit in limit lines ends in "…". Text
+// that fits stays one line, unchanged.
+func wrapStatus(s string, w, limit int) []string {
+	w = max(w, 1)
+	if lipgloss.Width(s) <= w {
+		return []string{s}
+	}
+	lines := strings.Split(lipgloss.NewStyle().Width(w).Render(s), "\n")
+	if len(lines) > limit {
+		// Word wrapping wastes the ragged line ends (and puts a long path on
+		// lines of its own): pack the text tightly before giving up on it.
+		lines = strings.Split(ansi.Hardwrap(s, w, true), "\n")
+		if len(lines) <= limit {
+			return lines
+		}
+		lines = lines[:limit]
+		lines[limit-1] = fit(lines[limit-1], w-1) + "…"
+	}
+	return lines
+}
+
 // frame pads body lines to the body height, appends the footer and fits
-// every line to the window width.
+// every line to the window width. A status wider than the window wraps onto
+// extra footer lines (taken from the body), so the whole text stays visible
+// and the view never exceeds the window height.
 func (m Model) frame(head []string, status, hints string) string {
-	room := max(0, m.height-2)
+	statusLines := wrapStatus(status, m.width, min(maxStatusLines, max(1, m.height-1)))
+	room := max(0, m.height-1-len(statusLines))
 	lines := make([]string, 0, m.height)
 	lines = append(lines, head[:min(len(head), room)]...)
 	for len(lines) < room {
 		lines = append(lines, "")
 	}
-	lines = append(lines, status, hints)
+	lines = append(lines, statusLines...)
+	lines = append(lines, hints)
 	if m.height < 2 { // degenerate window: show hints only
 		lines = []string{hints}
 	}
@@ -132,8 +162,20 @@ func (m Model) rowLine(r row, nameW, connW int, selected bool) string {
 	if r.readOnly() {
 		tags = append(tags, "[read-only]")
 	}
-	if r.included {
-		tags = append(tags, "[included]")
+	switch {
+	case !m.managed:
+		// Legacy mode: today's tag, and never [main].
+		if r.included {
+			tags = append(tags, "[included]")
+		}
+	case r.reason != "":
+		// Managed mode: a host outside the managed file. Hosts of the managed
+		// file (no reason) show neither tag.
+		if r.included {
+			tags = append(tags, "[included]")
+		} else {
+			tags = append(tags, "[main]")
+		}
 	}
 	if m.filter.Value() != "" && !r.gated {
 		// Flat list: show which group each match belongs to.
@@ -225,7 +267,7 @@ func (m Model) hintsLine() string {
 	case modeDelete:
 		return styleDim.Render("y delete  n cancel")
 	}
-	if !m.editable {
+	if !m.managed {
 		return styleDim.Render("↑↓ move  →← fold  enter connect  / filter  r reload  ? help  q quit")
 	}
 	return styleDim.Render("↑↓ move  →← fold  enter connect  / filter  e edit  n new  d dup  D del  ? help  q quit")
@@ -246,12 +288,15 @@ var helpLines = []string{
 	"  q / esc      quit",
 	"",
 	"Editor: tab/shift+tab fields, enter on last field or ctrl+s saves, esc cancels.",
-	"Hosts marked [read-only] (DevPod), [included] or [disabled] cannot be edited or deleted.",
+	"Tagged hosts cannot be edited, duplicated or deleted (edits go to the managed file):",
+	"  [main]      in the main file; 'sshm import' moves it to the managed file",
+	"  [included]  in another included file; sshm does not manage it",
+	"  [read-only] DevPod host     [disabled] its group is disabled",
 	"",
 	"press any key to close",
 }
 
-// readOnlyHelpLines is the help text while editing is disabled.
+// readOnlyHelpLines is the help text in legacy mode (before 'sshm setup').
 var readOnlyHelpLines = []string{
 	"Keys",
 	"",
@@ -262,14 +307,14 @@ var readOnlyHelpLines = []string{
 	"  r            reload config from disk",
 	"  q / esc      quit",
 	"",
-	"Editing from the TUI is disabled for now; use the sshm CLI (sshm edit --help).",
+	"Editing is available after 'sshm setup'.",
 	"",
 	"press any key to close",
 }
 
 func (m Model) helpView() string {
 	lines := []string{m.titleLine(), ""}
-	if m.editable {
+	if m.managed {
 		lines = append(lines, helpLines...)
 	} else {
 		lines = append(lines, readOnlyHelpLines...)

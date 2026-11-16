@@ -63,16 +63,34 @@ func TestIncludedHostCanBeConnected(t *testing.T) {
 	}
 }
 
-// With the editor off (as in Run) the edit keys do nothing, also on included
-// hosts, and no file is touched.
+// managedIncludeModel is includeModel in managed mode: the main file Includes
+// the managed file (host web-1) and extra.conf (inc-1, inc-2).
+func managedIncludeModel(t *testing.T) (Model, string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	incPath := filepath.Join(dir, "extra.conf")
+	writeFile(t, incPath, "Host inc-1\n  HostName 10.0.1.1\n  User ia\n\nHost inc-2\n  HostName 10.0.1.2\n")
+	managed := filepath.Join(dir, "config.d", "sshm.conf")
+	if err := os.MkdirAll(filepath.Dir(managed), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, managed, "Host web-1\n  HostName 10.0.0.1\n  User admin\n")
+	mainPath := filepath.Join(dir, "config")
+	writeFile(t, mainPath, "Include "+managed+"\nInclude "+incPath+"\n")
+	return New(app.NewAppWithPath(mainPath)), mainPath, incPath
+}
+
+// Legacy mode (T8, was: "with the editor off as in Run"): the edit keys do
+// nothing, also on included hosts, show the setup toast, and no file is touched.
 func TestIncludedHostEditKeysStayDisabled(t *testing.T) {
 	m, mainPath, incPath := includeModel(t)
 	mainBefore, incBefore := readFile(t, mainPath), readFile(t, incPath)
+	want := "editing needs setup: run 'sshm setup' to create " + filepath.Join(filepath.Dir(mainPath), "config.d", "sshm.conf")
 	m = onHost(m, "inc-1")
 	for _, key := range []string{"e", "n", "d", "D"} {
 		m, _ = press(m, key)
-		if m.mode != modeList || !m.toastErr || !strings.Contains(m.toast, "disabled") {
-			t.Fatalf("key %q: mode=%v toast=%q", key, m.mode, m.toast)
+		if m.mode != modeList || !m.toastErr || m.toast != want {
+			t.Fatalf("key %q: mode=%v toast=%q, want %q", key, m.mode, m.toast, want)
 		}
 	}
 	if readFile(t, mainPath) != mainBefore || readFile(t, incPath) != incBefore {
@@ -80,11 +98,10 @@ func TestIncludedHostEditKeysStayDisabled(t *testing.T) {
 	}
 }
 
-// Even with the editor force-enabled (tests only), e/d/D on an included host
-// are refused with the include message and never reach the writer.
+// In managed mode e/d/D on an included host are refused with the app layer's
+// message (naming the included file) and never reach the writer.
 func TestIncludedHostGatedForEditDeleteDuplicate(t *testing.T) {
-	m, mainPath, incPath := includeModel(t)
-	m.editable = true
+	m, mainPath, incPath := managedIncludeModel(t)
 	mainBefore, incBefore := readFile(t, mainPath), readFile(t, incPath)
 	entries, _ := os.ReadDir(filepath.Dir(mainPath))
 
@@ -105,7 +122,7 @@ func TestIncludedHostGatedForEditDeleteDuplicate(t *testing.T) {
 		t.Fatalf("directory entries changed: %d -> %d", len(entries), len(after))
 	}
 
-	// A main-file host is still editable in the same model.
+	// A host of the managed file is still editable in the same model.
 	m = onHost(m, "web-1")
 	m, _ = press(m, "e")
 	if m.mode != modeEditor {

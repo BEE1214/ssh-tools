@@ -197,7 +197,12 @@ func TestDuplicate(t *testing.T) {
 	if m.mode != modeList || curKey(m) != "h:web-3" || !strings.Contains(m.toast, "duplicated web-1 as web-3") {
 		t.Fatalf("mode=%v cursor=%q toast=%q", m.mode, curKey(m), m.toast)
 	}
-	want := fixture + "\nHost web-3\n  HostName 10.0.0.1\n  User admin\n  IdentityFile ~/.ssh/id_example\n"
+	// The managed writer puts the copy right behind its source block (the
+	// legacy writer appended it at the end of the file).
+	want := strings.Replace(fixture,
+		"Host web-1\n  HostName 10.0.0.1\n  User admin\n  IdentityFile ~/.ssh/id_example\n",
+		"Host web-1\n  HostName 10.0.0.1\n  User admin\n  IdentityFile ~/.ssh/id_example\n"+
+			"\nHost web-3\n  HostName 10.0.0.1\n  User admin\n  IdentityFile ~/.ssh/id_example\n", 1)
 	if got := readFile(t, path); got != want {
 		t.Errorf("file:\n%s\nwant:\n%s", got, want)
 	}
@@ -329,7 +334,7 @@ func TestEditChangesOnlyTargetBytes(t *testing.T) {
 	if !strings.Contains(before, "# sshm disabled group=deploy start") {
 		t.Fatalf("setup: group not disabled:\n%s", before)
 	}
-	stateBefore := readFile(t, a.ConfigPath()+".sshm-groups")
+	stateBefore := readFile(t, a.ManagedPath()+".sshm-groups") // next to the managed file
 
 	m = onHost(m, "web-1")
 	m, _ = press(m, "e", "tab")
