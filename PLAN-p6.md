@@ -67,6 +67,15 @@ type Snapshot struct {
 | T15 | The editor's live validation (`CheckEdit`/`CheckNewHost`) works for managed-file hosts and for new names that exist only in the main file (duplicate error). |
 | T16 | `internal/tui` imports only `app` and `domain` (layering unchanged). |
 
+## 4.1 Clarifications after the test round (binding)
+- **Name defined in both the main and the managed file:** ownership is decided per NAME exactly as `EditHost` decides it (T4 wins over the T2 wording): every entry of that name has `ReadOnlyReason == ""` because the managed definition exists. Tests do not cover this case.
+- **Pattern blocks** (`Host web-*`, multi-pattern) are not listed by the TUI (`visibleHosts` drops wildcard blocks), so `e` on them is unreachable; no change.
+- **Legacy mode precedence (T8):** the setup toast comes before any host-specific toast, also on a group header. In managed mode the gated/DevPod toasts take precedence over the ownership reason (T10).
+- **Failed reload (T7):** keeps the last snapshot, editing stays as it was.
+- **Legacy help (T11):** need not explain `[included]` more than today; it must never mention `[main]`.
+- **`CheckEdit` issue `Line`/`File`** are those `domain.Validate` gives for the loaded managed host.
+- The port field has no validation in the form (`Port notaport` reaches the app and is rolled back by the ssh verify step, T14).
+
 ## 5. Test notes
 - TUI tests build their fixture with a helper that writes a temp main config with an absolute
   `Include <tmp>/config.d/sshm.conf` as first line, a managed file holding the editable hosts, and main-file
