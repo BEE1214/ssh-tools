@@ -277,7 +277,9 @@ func TestReloadPicksUpExternalChange(t *testing.T) {
 }
 
 func TestLoadErrorIsNonFatalAndRecoverable(t *testing.T) {
-	m, _, path := newTestModel(t, "Host a-1\n  HostName 10.0.0.1\n")
+	// Legacy fixture: the load error is about the MAIN file (a broken included
+	// file is only a warning).
+	m, _, path := newLegacyTestModel(t, "Host a-1\n  HostName 10.0.0.1\n")
 	// Unterminated disabled marker = parse error on the next read.
 	writeFile(t, path, "# sshm disabled group=x start\n# Host x-1\n")
 	m, _ = press(m, "r")

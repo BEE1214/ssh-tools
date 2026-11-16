@@ -14,10 +14,13 @@ type row struct {
 	host  domain.Host
 	gated bool // host is in a disabled group: not connectable/editable
 
-	// included: the host is defined only in a file pulled in by Include.
-	// Connectable, but not editable/deletable/duplicable (sshm only writes
-	// the main file).
+	// included: the host is defined only in a file pulled in by Include
+	// (Snapshot's Included flag, unchanged).
 	included bool
+	// reason is Snapshot's ReadOnlyReason: "" when sshm may edit, duplicate and
+	// delete the host, else the refusal the write would return. The host stays
+	// connectable.
+	reason string
 }
 
 // key identifies a row across rebuilds so the cursor can follow it.
@@ -42,6 +45,8 @@ func (m *Model) reload() {
 	m.loadErr = nil
 	m.hosts = snap.Hosts
 	m.issues = snap.Issues
+	m.managed = snap.Managed
+	m.managedPath = snap.ManagedPath
 	m.rebuild()
 }
 
@@ -63,9 +68,13 @@ func (m Model) buildRows() []row {
 	hosts := m.visibleHosts()
 	gated := map[string]bool{}
 	included := map[string]bool{}
+	reason := map[string]string{} // decided per name by the app layer
 	for _, e := range m.hosts {
 		if e.Gated {
 			gated[e.Name] = true
+		}
+		if _, seen := reason[e.Name]; !seen {
+			reason[e.Name] = e.ReadOnlyReason
 		}
 		if prev, seen := included[e.Name]; seen {
 			included[e.Name] = prev && e.Included
@@ -83,7 +92,7 @@ func (m Model) buildRows() []row {
 			}
 		}
 		for _, name := range domain.FuzzyMatch(hosts, q) {
-			rows = append(rows, row{host: byName[name], gated: gated[name], included: included[name]})
+			rows = append(rows, row{host: byName[name], gated: gated[name], included: included[name], reason: reason[name]})
 		}
 		return rows
 	}
@@ -96,7 +105,7 @@ func (m Model) buildRows() []row {
 			continue
 		}
 		for _, h := range groups[g] {
-			rows = append(rows, row{group: g, host: h, gated: gated[h.Name], included: included[h.Name]})
+			rows = append(rows, row{group: g, host: h, gated: gated[h.Name], included: included[h.Name], reason: reason[h.Name]})
 		}
 	}
 	return rows

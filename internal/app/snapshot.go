@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/adamdvorsky/ssh-tools/internal/config"
 	"github.com/adamdvorsky/ssh-tools/internal/domain"
 )
 
@@ -48,18 +49,37 @@ func (a *App) Snapshot() (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	v := a.viewOf(l)
 	snap := Snapshot{
-		Hosts:  make([]HostEntry, 0, len(l.Hosts)),
-		Issues: validateLoaded(l),
+		Hosts:       make([]HostEntry, 0, len(l.Hosts)),
+		Issues:      validateLoaded(l),
+		Managed:     v != nil,
+		ManagedPath: a.ManagedPath(),
 	}
 	for _, h := range l.Hosts {
 		snap.Hosts = append(snap.Hosts, HostEntry{
-			Host:     h,
-			Gated:    isHostGated(h, state),
-			Included: ensureInMainLoaded(l, h.Name) != nil,
+			Host:           h,
+			Gated:          isHostGated(h, state),
+			Included:       ensureInMainLoaded(l, h.Name) != nil,
+			ReadOnlyReason: readOnlyReason(l, v, h.Name),
 		})
 	}
 	return snap, nil
+}
+
+// readOnlyReason is the refusal a write to name would return (guardWrite, on
+// the configuration already loaded): "" when sshm may write the host's block.
+func readOnlyReason(l *config.Loaded, v *managedView, name string) string {
+	var err error
+	if v != nil {
+		err = v.unmanaged(name)
+	} else {
+		err = ensureInMainLoaded(l, name)
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return ""
 }
 
 // CheckHostName reports why name cannot be used for a new host: it is
@@ -76,7 +96,12 @@ func (a *App) CheckHostName(name string) error {
 	if err != nil {
 		return err
 	}
+	// Any loaded file counts. In managed mode "exists" is also what AddHost
+	// decides (managedView.has matches the pattern, not the raw line text).
 	if findHostIndex(l.Hosts, name) != -1 {
+		return fmt.Errorf("host %q already exists", name)
+	}
+	if v := a.viewOf(l); v != nil && v.has(name) {
 		return fmt.Errorf("host %q already exists", name)
 	}
 	return nil
@@ -101,6 +126,20 @@ func (a *App) CheckNewHost(h domain.Host) ([]domain.Issue, error) {
 // changes (same semantics as EditHost). It writes nothing. It returns the
 // same refusal errors as EditHost (not found, disabled, DevPod-managed).
 func (a *App) CheckEdit(name string, changes map[string]string) ([]domain.Issue, error) {
+	v, err := a.activeView()
+	if err != nil {
+		return nil, err
+	}
+	if v != nil {
+		h, err := v.editTarget(name)
+		if err != nil {
+			return nil, err
+		}
+		for key, value := range changes {
+			applyChange(&h, key, value)
+		}
+		return domain.Validate([]domain.Host{h}), nil
+	}
 	if err := a.ensureInMain(name); err != nil {
 		return nil, err
 	}

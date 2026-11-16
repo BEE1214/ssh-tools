@@ -132,8 +132,20 @@ func (m Model) rowLine(r row, nameW, connW int, selected bool) string {
 	if r.readOnly() {
 		tags = append(tags, "[read-only]")
 	}
-	if r.included {
-		tags = append(tags, "[included]")
+	switch {
+	case !m.managed:
+		// Legacy mode: today's tag, and never [main].
+		if r.included {
+			tags = append(tags, "[included]")
+		}
+	case r.reason != "":
+		// Managed mode: a host outside the managed file. Hosts of the managed
+		// file (no reason) show neither tag.
+		if r.included {
+			tags = append(tags, "[included]")
+		} else {
+			tags = append(tags, "[main]")
+		}
 	}
 	if m.filter.Value() != "" && !r.gated {
 		// Flat list: show which group each match belongs to.
@@ -225,7 +237,7 @@ func (m Model) hintsLine() string {
 	case modeDelete:
 		return styleDim.Render("y delete  n cancel")
 	}
-	if !m.editable {
+	if !m.managed {
 		return styleDim.Render("↑↓ move  →← fold  enter connect  / filter  r reload  ? help  q quit")
 	}
 	return styleDim.Render("↑↓ move  →← fold  enter connect  / filter  e edit  n new  d dup  D del  ? help  q quit")
@@ -246,12 +258,15 @@ var helpLines = []string{
 	"  q / esc      quit",
 	"",
 	"Editor: tab/shift+tab fields, enter on last field or ctrl+s saves, esc cancels.",
-	"Hosts marked [read-only] (DevPod), [included] or [disabled] cannot be edited or deleted.",
+	"Tagged hosts cannot be edited, duplicated or deleted (edits go to the managed file):",
+	"  [main]      in the main file; 'sshm import' moves it to the managed file",
+	"  [included]  in another included file; sshm does not manage it",
+	"  [read-only] DevPod host     [disabled] its group is disabled",
 	"",
 	"press any key to close",
 }
 
-// readOnlyHelpLines is the help text while editing is disabled.
+// readOnlyHelpLines is the help text in legacy mode (before 'sshm setup').
 var readOnlyHelpLines = []string{
 	"Keys",
 	"",
@@ -262,14 +277,14 @@ var readOnlyHelpLines = []string{
 	"  r            reload config from disk",
 	"  q / esc      quit",
 	"",
-	"Editing from the TUI is disabled for now; use the sshm CLI (sshm edit --help).",
+	"Editing is available after 'sshm setup'.",
 	"",
 	"press any key to close",
 }
 
 func (m Model) helpView() string {
 	lines := []string{m.titleLine(), ""}
-	if m.editable {
+	if m.managed {
 		lines = append(lines, helpLines...)
 	} else {
 		lines = append(lines, readOnlyHelpLines...)

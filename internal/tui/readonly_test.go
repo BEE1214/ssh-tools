@@ -6,15 +6,16 @@ import (
 	"testing"
 )
 
-// New (the constructor Run uses) must leave editing off: e/n/d/D only toast,
-// never open the editor or touch the config file.
+// Legacy mode (T8 characterization, was TestEditingDisabledByDefault): New over
+// a config that does not include the managed file leaves editing off: e/n/d/D
+// only toast, never open the editor or touch the config file.
 func TestEditingDisabledByDefault(t *testing.T) {
-	m, a, path := newTestModel(t, fixture)
-	m = New(a) // fresh model: editable is false, as in Run
+	m, a, path := newLegacyTestModel(t, fixture)
 	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	want := "editing needs setup: run 'sshm setup' to create " + a.ManagedPath()
 
 	m, _ = press(m, "right", "j") // expand first group, land on a host
 	for _, key := range []string{"e", "n", "d", "D"} {
@@ -22,8 +23,8 @@ func TestEditingDisabledByDefault(t *testing.T) {
 		if m.mode != modeList {
 			t.Fatalf("key %q left list mode (mode=%v)", key, m.mode)
 		}
-		if !m.toastErr || !strings.Contains(m.toast, "disabled") {
-			t.Fatalf("key %q: want a 'disabled' error toast, got %q", key, m.toast)
+		if !m.toastErr || m.toast != want {
+			t.Fatalf("key %q: want the error toast %q, got %q", key, want, m.toast)
 		}
 	}
 
@@ -37,8 +38,7 @@ func TestEditingDisabledByDefault(t *testing.T) {
 }
 
 func TestReadOnlyHintsAndHelpOmitEditKeys(t *testing.T) {
-	_, a, _ := newTestModel(t, fixture)
-	m := New(a)
+	m, _, _ := newLegacyTestModel(t, fixture)
 	if h := m.hintsLine(); strings.Contains(h, "e edit") || strings.Contains(h, "D del") {
 		t.Fatalf("hints advertise editing: %q", h)
 	}

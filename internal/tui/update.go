@@ -87,8 +87,9 @@ func (m Model) updateList(k tea.KeyPressMsg) (Model, tea.Cmd) {
 	case "?":
 		m.mode = modeHelp
 	case "e", "n", "d", "D":
-		if !m.editable {
-			m.setToast("editing is disabled in the TUI for now; use the sshm CLI", true)
+		if !m.managed {
+			// Legacy mode: no TUI write may reach the lossy legacy writer.
+			m.setToast("editing needs setup: run 'sshm setup' to create "+m.managedPath, true)
 			return m, nil
 		}
 		switch k.String() {
@@ -133,7 +134,8 @@ func disabledMsg(r row) string {
 }
 
 // hostForChange returns the host under the cursor if it may be modified;
-// otherwise it sets an explanatory toast and returns false.
+// otherwise it sets an explanatory toast and returns false. Gated and DevPod
+// hosts keep their own toasts; the ownership reason comes last.
 func (m *Model) hostForChange() (row, bool) {
 	r, ok := m.current()
 	if !ok || r.header {
@@ -144,8 +146,9 @@ func (m *Model) hostForChange() (row, bool) {
 		m.setToast(disabledMsg(r), true)
 	case r.readOnly():
 		m.setToast(r.host.Name+" is read-only (managed by DevPod)", true)
-	case r.included:
-		m.setToast(fmt.Sprintf("host %q is defined in %s (included), which sshm cannot edit yet", r.host.Name, r.host.SourceFile), true)
+	case r.reason != "":
+		// The app layer's own refusal text (managed or legacy wording).
+		m.setToast(r.reason, true)
 	default:
 		return r, true
 	}

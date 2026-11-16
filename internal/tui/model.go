@@ -3,7 +3,8 @@
 // It talks to the app layer only (plus domain types). Every config mutation
 // goes through app.AddHost/EditHost/DeleteHost/DuplicateHost, which re-read
 // the file before writing, so the in-memory copy held here is display-only
-// and can never clobber an external edit.
+// and can never clobber an external edit. Editing is offered only in managed
+// mode (after 'sshm setup'); hosts outside the managed file are read-only.
 //
 // The TUI never execs ssh itself: on Enter it quits (restoring the terminal)
 // and Run returns the chosen host name for the caller to connect.
@@ -53,11 +54,11 @@ type Model struct {
 
 	width, height int
 
-	// editable gates the e/n/d/D keys. Off in Run until the managed-config
-	// writer lands (PLAN-include.md P2): the current writer re-serializes the
-	// whole file, so TUI writes are disabled rather than risk comment loss.
-	// Tests flip it on to keep the editor code exercised.
-	editable bool
+	// managed / managedPath come from the last loaded snapshot. The e/n/d/D
+	// keys work only when managed is true (every write then goes to the managed
+	// file); reload re-evaluates it. A failed reload keeps the previous values.
+	managed     bool
+	managedPath string
 
 	toast    string // one-line feedback, cleared on the next key
 	toastErr bool
@@ -69,12 +70,13 @@ type Model struct {
 // shown in the status bar and the user can retry with "r".
 func New(a *app.App) Model {
 	m := Model{
-		app:      a,
-		expanded: map[string]bool{},
-		filter:   newInput(""),
-		prompt:   newInput(""),
-		width:    80,
-		height:   24,
+		app:         a,
+		managedPath: a.ManagedPath(), // until the first snapshot loads
+		expanded:    map[string]bool{},
+		filter:      newInput(""),
+		prompt:      newInput(""),
+		width:       80,
+		height:      24,
 	}
 	m.reload()
 	return m
