@@ -16,6 +16,12 @@ type HostEntry struct {
 	// Included is true when the host is defined only in files pulled in by
 	// Include, not in the main config file. sshm cannot edit those yet.
 	Included bool
+	// ReadOnlyReason is "" when the location allows edit, duplicate and delete
+	// (managed mode: the host is defined in the managed file; legacy mode: it
+	// is defined in the main file). Otherwise it is the refusal message the
+	// write would return (the *UnmanagedHostError text, or the legacy
+	// "included" refusal text). Gated and DevPod hosts are NOT reflected here.
+	ReadOnlyReason string
 }
 
 // Snapshot is a consistent, read-only view of the config for presentation
@@ -25,6 +31,10 @@ type HostEntry struct {
 type Snapshot struct {
 	Hosts  []HostEntry
 	Issues []domain.Issue
+	// Managed is App.ManagedActive().
+	Managed bool
+	// ManagedPath is App.ManagedPath().
+	ManagedPath string
 }
 
 // Snapshot reads the config once and returns all hosts with their gate state
