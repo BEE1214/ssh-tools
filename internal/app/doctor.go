@@ -32,6 +32,14 @@ const (
 	RuleAgentForwardingDefault  = "agent-forwarding-default" // D23
 )
 
+// Test seams for the owner rules of D9/D10: the current uid and the owner of a
+// file. A non-root test cannot chown a fixture to another user, so tests
+// replace ownerOf; production code never reassigns them.
+var (
+	currentUID = os.Getuid
+	ownerOf    = fileOwnerUID
+)
+
 // doctorProbeHost is the host name doctor hands to `ssh -G`; it must not
 // collide with a real host (PLAN-p5.md section 4, D21-D23).
 const doctorProbeHost = "sshm-doctor-probe"
@@ -134,7 +142,7 @@ func doctorFileChecks(l *config.Loaded, managed string) []domain.Issue {
 						fmt.Sprintf("IdentityFile %s does not exist", v)))
 				case err != nil:
 					// Unreadable for another reason: not doctor's finding.
-				case fi.Mode().IsRegular() && !strings.HasSuffix(p, ".pub") && fi.Mode().Perm()&0o077 != 0:
+				case fi.Mode().IsRegular() && !strings.HasSuffix(p, ".pub") && fi.Mode().Perm()&0o077 != 0 && keyOwnerRefused(fi):
 					unsafeKey = append(unsafeKey, at(domain.SeverityError, RuleUnsafePermissions,
 						fmt.Sprintf("IdentityFile %s has mode %04o: readable or writable by group/other, ssh refuses such a key (chmod 600 %s)",
 							v, fi.Mode().Perm(), v)))
@@ -181,6 +189,14 @@ func doctorFileChecks(l *config.Loaded, managed string) []domain.Issue {
 	return append(out, expired...)
 }
 
+// keyOwnerRefused reports whether ssh would refuse the loosely-moded private
+// key fi: authfile.c sshkey_perm_ok refuses it only when the current user owns
+// it. When the owner is unknown the key is judged by its mode alone (true).
+func keyOwnerRefused(fi os.FileInfo) bool {
+	uid, ok := ownerOf(fi)
+	return !ok || uid == currentUID()
+}
+
 // doctorConfigPermissions runs D10 over every config file read (the managed
 // file included) and D11 for the managed file. A managed file that no Include
 // reaches is still looked at, directly.
@@ -199,11 +215,25 @@ func doctorConfigPermissions(l *config.Loaded, managed string) (d10, d11 []domai
 		}
 		mode := fi.Mode().Perm()
 		isManaged := samePath(p, managed)
+		// readconf.c: a file whose owner is neither root nor the current user
+		// is refused ("Bad owner or permissions"). Without an owner (ok false)
+		// only the mode is judged.
+		ownerUID, ownerKnown := ownerOf(fi)
+		badOwner := ownerKnown && ownerUID != 0 && ownerUID != currentUID()
+		ownerMsg := fmt.Sprintf("owned by uid %d: ssh accepts only root (uid 0) or the current user (uid %d) as owner", ownerUID, currentUID())
 		switch {
 		case mode&0o022 != 0:
+			msg := fmt.Sprintf("config file %s has mode %04o: writable by group/other, ssh may refuse it (chmod 600 %s)", p, mode, p)
+			if badOwner {
+				msg += "; also " + ownerMsg
+			}
+			d10 = append(d10, domain.Issue{
+				Severity: domain.SeverityError, Rule: RuleUnsafePermissions, File: issueFile(l, p), Message: msg,
+			})
+		case badOwner:
 			d10 = append(d10, domain.Issue{
 				Severity: domain.SeverityError, Rule: RuleUnsafePermissions, File: issueFile(l, p),
-				Message: fmt.Sprintf("config file %s has mode %04o: writable by group/other, ssh may refuse it (chmod 600 %s)", p, mode, p),
+				Message: fmt.Sprintf("config file %s is %s", p, ownerMsg),
 			})
 		case isManaged && mode&0o044 != 0:
 			d11 = append(d11, domain.Issue{
