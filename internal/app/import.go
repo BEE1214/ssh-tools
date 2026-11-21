@@ -368,7 +368,9 @@ func (a *App) applyImport(p *importPlan, opts ImportOptions, verify bool, res *I
 		moved = append(moved, p.mainDoc.Lines[s.From:s.To]...)
 	}
 	newManaged := config.ParseDoc(p.managedRaw)
-	newManaged.AppendRaw(moved)
+	if err := newManaged.AppendRaw(moved); err != nil {
+		return fmt.Errorf("not importing: %w", err)
+	}
 	newMain := config.ParseDoc(p.mainRaw)
 	if err := newMain.RemoveSpans(p.spans); err != nil {
 		return fmt.Errorf("not importing: %w", err)

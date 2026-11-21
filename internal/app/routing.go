@@ -377,6 +377,16 @@ func (v *managedView) groupOutsideManaged(group string, disabledOnly bool) []*Un
 	return out
 }
 
+// hasDisabledMember reports whether group has a disabled block in the managed file.
+func (v *managedView) hasDisabledMember(group string) bool {
+	for _, h := range v.l.Hosts {
+		if h.Group == group && h.Disabled && !h.IsWildcard() && h.SourceFile == v.file.Path {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) disableGroupManaged(v *managedView, group string) error {
 	if outside := v.groupOutsideManaged(group, false); len(outside) > 0 {
 		return &groupUnmanagedError{
@@ -390,10 +400,23 @@ func (a *App) disableGroupManaged(v *managedView, group string) error {
 			targets = append(targets, hostKey(h))
 		}
 	}
-	if len(targets) == 0 {
-		return fmt.Errorf("group %q has no enabled hosts", group)
-	}
 	statePath := a.groupStatePath()
+	if len(targets) == 0 {
+		// Retry safety: the blocks may be disabled already while the sidecar
+		// write of that earlier run failed. Then only the sidecar is missing.
+		if !v.hasDisabledMember(group) {
+			return fmt.Errorf("group %q has no enabled hosts", group)
+		}
+		state, err := a.readGroupState()
+		if err != nil {
+			return err
+		}
+		if state[group] {
+			return fmt.Errorf("group %q has no enabled hosts", group)
+		}
+		state[group] = true
+		return writeGroupState(statePath, state)
+	}
 	err := a.editManagedDoc(func(d *config.Doc) (verifyPlan, error) {
 		if err := d.DisableBlocks(targets, group); err != nil {
 			return verifyPlan{}, fmt.Errorf("disable group %q: %w", group, err)
@@ -464,7 +487,9 @@ func (a *App) initManaged(v *managedView) (written bool, note string, err error)
 		return false, "", err
 	}
 	d := config.ParseDoc(v.l.Files[0].Cfg.Raw)
-	d.AppendRaw(lines)
+	if err := d.AppendRaw(lines); err != nil {
+		return false, "", err
+	}
 	// The new block gives every host values it did not have: any change of what
 	// a name resolves to is allowed, ssh just has to parse the result.
 	plan := verifyPlan{changed: map[string]bool{"*": true}}
