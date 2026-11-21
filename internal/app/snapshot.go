@@ -13,6 +13,10 @@ import (
 // offer. Gated hosts (commented out of the config, or in a group recorded as
 // disabled) must not be connected, edited or deleted.
 type HostEntry struct {
+	// Host.Name is the name a user types, the one pattern of the Host line; a
+	// trailing comment is not part of it (`Host web-9 # prod box` is web-9).
+	// It is NOT the raw argument text the parser keeps. A line with several
+	// patterns keeps its line text, as there is no single name to type.
 	domain.Host
 	Gated bool
 	// Included is true when the host is defined only in files pulled in by
@@ -66,12 +70,24 @@ func (a *App) Snapshot() (Snapshot, error) {
 	if v == nil {
 		snap.ManagedProblem = managedLoadProblem(l, snap.ManagedPath)
 	}
-	for _, h := range l.Hosts {
+	// The parser keeps the raw argument text of a Host line as Name (a trailing
+	// comment included), the legacy writer needs it. Everything a UI does with
+	// a host goes by the name a user types, so every lookup below runs on the
+	// clean name: ownership (hostKey) and the legacy include check, which
+	// matches Name, on a copy of the host list that carries the clean names.
+	clean := make([]domain.Host, len(l.Hosts))
+	for i, h := range l.Hosts {
+		h.Name = hostKey(h)
+		clean[i] = h
+	}
+	byKey := *l
+	byKey.Hosts = clean
+	for _, h := range clean {
 		snap.Hosts = append(snap.Hosts, HostEntry{
 			Host:           h,
 			Gated:          isHostGated(h, state),
-			Included:       ensureInMainLoaded(l, h.Name) != nil,
-			ReadOnlyReason: readOnlyReason(l, v, h.Name),
+			Included:       ensureInMainLoaded(&byKey, h.Name) != nil,
+			ReadOnlyReason: readOnlyReason(&byKey, v, h.Name),
 		})
 	}
 	return snap, nil

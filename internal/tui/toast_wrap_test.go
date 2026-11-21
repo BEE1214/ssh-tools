@@ -114,14 +114,40 @@ func TestTwT17_AtMostThreeLinesEvenForAHugeToast(t *testing.T) {
 	m.setToast(twLong(400), true)
 	view := plain(m)
 	lines := twRequireFits(t, "400-char toast", view, 80, 24)
-	if got := twSpan(lines); got > 3 {
-		t.Errorf("toast spans %d lines, want at most 3", got)
+	last := len(lines) - 1
+	if !strings.Contains(lines[last], "↑↓ move") {
+		t.Fatalf("the hints line is not the last line: %q", lines[last])
 	}
-	if !strings.Contains(twFlat(view), "HEAD") {
-		t.Errorf("the start of the toast is missing:\n%s", view)
+	// The status area is everything from the line that starts the toast down to
+	// the hints line. A toast too long for the cap is cut, not dropped: exactly 3
+	// lines, the last one ending in an ellipsis. (The end of the text, "import'",
+	// is deliberately gone, so twSpan cannot measure this case.)
+	first := -1
+	for i, l := range lines {
+		if strings.Contains(l, "HEAD") {
+			first = i
+			break
+		}
 	}
-	if !strings.Contains(lines[len(lines)-1], "↑↓ move") {
-		t.Errorf("the hints line is not the last line: %q", lines[len(lines)-1])
+	if first < 0 {
+		t.Fatalf("the start of the toast is missing:\n%s", view)
+	}
+	status := lines[first:last]
+	if len(status) != 3 {
+		t.Errorf("status area has %d lines, want exactly 3:\n%s", len(status), strings.Join(status, "\n"))
+	}
+	if n := len(status); n > 0 {
+		if end := strings.TrimRight(status[n-1], " "); !strings.HasSuffix(end, "…") {
+			t.Errorf("last status line %q does not end in …", end)
+		}
+	}
+	for i, l := range status[:min(2, len(status))] {
+		if strings.HasSuffix(strings.TrimRight(l, " "), "…") {
+			t.Errorf("status line %d ends in … but is not the last one: %q", i, l)
+		}
+	}
+	if strings.Contains(twFlat(view), twFlat(twTail)) {
+		t.Errorf("the tail of a 400-char toast is still shown, so nothing was cut:\n%s", view)
 	}
 }
 
