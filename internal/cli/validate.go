@@ -7,6 +7,8 @@ import (
 
 	"github.com/adamdvorsky/ssh-tools/internal/domain"
 	"github.com/spf13/cobra"
+
+	"github.com/adamdvorsky/ssh-tools/internal/app"
 )
 
 func newValidateCmd() *cobra.Command {
@@ -78,6 +80,15 @@ func newGroupsCmd() *cobra.Command {
 	return cmd
 }
 
+// groupBlocksPath is the file whose host blocks a group disable/enable moves:
+// the managed file in managed mode, the main config in legacy mode.
+func groupBlocksPath(a *app.App) string {
+	if active, err := a.ManagedActive(); err == nil && active {
+		return a.ManagedPath()
+	}
+	return a.ConfigPath()
+}
+
 func newGroupsDisableCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "disable <group>",
@@ -94,7 +105,7 @@ e.g. production deployments.`,
 			if err := a.DisableGroup(args[0]); err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "group %q disabled — blocks commented out of %s\n", args[0], a.ConfigPath())
+			fmt.Fprintf(os.Stderr, "group %q disabled — blocks commented out of %s\n", args[0], groupBlocksPath(a))
 			printHint(a)
 			return nil
 		},
@@ -116,7 +127,7 @@ removed from the sidecar state file.`,
 			if err := a.EnableGroup(args[0]); err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "group %q enabled — blocks restored in %s\n", args[0], a.ConfigPath())
+			fmt.Fprintf(os.Stderr, "group %q enabled — blocks restored in %s\n", args[0], groupBlocksPath(a))
 			printHint(a)
 			return nil
 		},
