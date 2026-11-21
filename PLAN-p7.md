@@ -92,3 +92,31 @@ ssh-rejected config (doctor D20); friendlier error for a missing config in read-
 - R1 is tested with a wrapper `ssh` that sleeps while the config contains a marker option, signal sent from a helper
   subprocess; the test agent decides the seam, the spec fixes only the outcome.
 - Test files are named by topic (not-set-up gate, init-fresh, names, multi-pattern, interrupt), never by round.
+
+## 7. Clarifications after the skeleton (binding)
+Skeleton adds `*MultiPatternError{Host, File string; Line int}` and `(*App).InitFresh() (SetupResult, fresh bool, error)`
+(`internal/app/setup.go`, stubs return `ErrNotImplemented`). The CLI `init` is not wired yet; the implementation round
+calls `InitFresh` first and `InitDefaultsReport` only when `fresh` is false.
+1. **I2 output.** Setup action lines and `note: ...` lines exactly as `sshm setup` prints them, on stderr; then one final
+   stderr line: `created an empty <ManagedPath>; run 'sshm init' again to add the default Host * block`.
+2. **Gate order (G3), uniform.** Inside the App every gated method checks the gate FIRST, before argument checks that
+   exist today (`ValidateGroupName`, `checkHostArg`, CA key and public key lookup of `SignCert`). Only cobra-level
+   flag and argument-count errors come before it.
+3. **`SignCert` with a host:** gate before CA key lookup and before `ssh-keygen`. Without a host nothing is written to the
+   config and there is no gate.
+4. **`RevokeCert`:** `cert file not found` and inspection errors still come first (no config is touched). The gate fires
+   when a referencing host is found (decided by today's code: CertificateFile or identity match), via
+   `ClearCertificateFile`; the returned error may be wrapped (`cert file not deleted: ...: %w`), so tests assert
+   `errors.Is(err, ErrNotSetUp)` and that the message contains the `ErrNotSetUp` text. Nothing is deleted.
+5. **`ClearCertificateFile`:** gate first, also for an unknown host (no more silent nil).
+6. **`InitDefaults` and `InitDefaultsReport`** are both gated.
+7. **G4 scope:** gated methods and `CheckEdit` return `ErrNotSetUp` for a missing main file. `CheckHostName`, `CheckNewHost`
+   and all read-only methods keep `read config: open ...`.
+8. **`InitFresh`:** `fresh` is true whenever the main file was missing and the setup actions ran, also when
+   `config.d/sshm.conf` already existed. A zero-byte or comment-only main file is NOT fresh: `init` returns `ErrNotSetUp` for it.
+9. **Second `init` output** is unchanged (including the existing `Host *` note).
+10. **M1/M2 precedence for one name:** single-pattern blocks are looked at first (in the managed file: normal edit; only
+    elsewhere: `*UnmanagedHostError` wins). `*MultiPatternError` is returned only when no single-pattern block has that name.
+11. **`MultiPatternError.File`** is the `SourceFile` the host carries, the same string `UnmanagedHostError.File` uses.
+12. **G5:** the `printHint(a)` calls in the CLI (add, edit, forward x2, cert sign, groups disable/enable, init) and the
+    function itself are removed with `SetupHint`.

@@ -36,6 +36,20 @@ func (e *UnmanagedHostError) Error() string {
 	return fmt.Sprintf("host %q is defined in %s (included), which sshm does not manage", e.Host, e.File)
 }
 
+// MultiPatternError: a write was addressed by a name that is only one of
+// several patterns of a Host line (P7 M1), or by the whole line text (M2). Host
+// is the Name of the block, i.e. the line's argument text with comment and
+// quotes stripped ("db-1 db-2"); File and Line say where the line is.
+//
+// SKELETON (P7): the message is a placeholder until the implementation round.
+type MultiPatternError struct {
+	Host string
+	File string
+	Line int
+}
+
+func (e *MultiPatternError) Error() string { return ErrNotImplemented.Error() }
+
 // ManagedPath returns the path of the managed file: <dir of main>/config.d/sshm.conf.
 func (a *App) ManagedPath() string { return managedPathFor(a.configPath) }
 
@@ -56,6 +70,21 @@ func (a *App) SetupHint() string {
 		return ""
 	}
 	return "hint: run 'sshm setup' to keep sshm-managed hosts in " + a.ManagedPath()
+}
+
+// InitFresh is the fresh-machine entry of 'sshm init' (P7 I1-I4): when the main
+// file does NOT exist it performs exactly the actions of Setup (directories,
+// an empty managed file, the main file holding the Include line, verified like
+// Setup), writes NO Host * block and returns the Setup result with fresh true.
+// When the main file exists it changes nothing and returns fresh false; the
+// caller then goes on with InitDefaultsReport (which returns ErrNotSetUp for a
+// config that is not set up, G1). A failure leaves the previous state or a
+// complete set-up state (I4).
+//
+// SKELETON (P7): returns ErrNotImplemented. The CLI 'init' does not call it
+// yet.
+func (a *App) InitFresh() (res SetupResult, fresh bool, err error) {
+	return SetupResult{}, false, ErrNotImplemented
 }
 
 // SetupOptions are the options of Setup.
