@@ -40,7 +40,7 @@ mains, advice for tools that do not follow `Include` (README notes only, see X5)
 ### Gate
 | ID | Clause |
 |---|---|
-| G1 | These return `ErrNotSetUp` (text `sshm is not set up: run 'sshm setup' first`, `errors.Is` works) when the main file has no unconditional Include of the managed file: `AddHost`, `EditHost`, `DeleteHost`, `DuplicateHost`, forward save/clear, `SignCert` with a host, `ClearCertificateFile`, `DisableGroup`, `EnableGroup`, `InitDefaults*` (except I1) and `CheckEdit`. Hence the CLI commands `add`, `edit`, `duplicate`, `forward --save/--clear`, `cert sign --host`, `cert revoke` (when a host references the cert), `groups disable/enable`, `init`, and the TUI edit keys. |
+| G1 | These return `ErrNotSetUp` (text `sshm is not set up: run 'sshm setup' first`, `errors.Is` works) when the main file has no unconditional Include of the managed file: `AddHost`, `EditHost`, `DeleteHost`, `DuplicateHost`, forward save/clear, `SignCert` with a host, `ClearCertificateFile`, `DisableGroup`, `EnableGroup`, `InitDefaults*` (except I1) and `CheckEdit`. Hence the CLI commands `add`, `edit`, `forward --save/--clear` (`duplicate` exists only in the app layer and the TUI), `cert sign --host`, `cert revoke` (when a host references the cert), `groups disable/enable`, `init`, and the TUI edit keys. |
 | G2 | The gate changes nothing: no file or directory under the ssh dir is created or modified (no lock file, no backup), and a refused `cert sign --host` neither runs `ssh-keygen` nor creates or overwrites a certificate; a refused `cert revoke` does not delete the certificate file. |
 | G3 | The gate comes first: `ErrNotSetUp` wins over not-found, already-exists, unmanaged-host and multi-pattern errors. Argument errors that need no config (cobra flag errors) still come first. |
 | G4 | Main file does not exist: every gated command except `init` returns `ErrNotSetUp` (not `read config: ...`). Any other read or parse error of the config keeps today's message. |
@@ -59,7 +59,7 @@ mains, advice for tools that do not follow `Include` (README notes only, see X5)
 ### Names and multi-pattern lines
 | ID | Clause |
 |---|---|
-| N1 | `domain.Host.Name` produced by the parser is exactly what `hostKey` returns today: a `Host` line with one pattern (comment and quotes stripped, `Host web-1 # prod` -> `web-1`), otherwise the line's argument text unchanged. A literal `Host "a b"` versus `Host a b` collision is accepted as today. |
+| N1 | `domain.Host.Name` produced by the parser is: a `Host` line with exactly one pattern -> that pattern (comment and quotes stripped, `Host web-1 # prod` -> `web-1`); several patterns -> the patterns joined by ONE space, comment stripped (`Host db-1 db-2 # pair` -> `db-1 db-2`, `Host * !x` -> `* !x`); no pattern (`Host # c`, `Host ""`) -> the argument text exactly as today. A literal `Host "a b"` versus `Host a b` collision is accepted as today. (Draft 1 said "line text unchanged"; that contradicted M1's error text. Section 7 item 13 is the binding wording.) |
 | N2 | `hostKey` and the name rewrite in `Snapshot` are removed (the name is already clean). `dump`, `connect`, `copy`, `edit`, `duplicate`, `delete`, `forward`, `cert`, group commands find `web-1` for `Host web-1 # prod`. |
 | N3 | No regression (characterization): `Host * !x` is not a wildcard (`IsWildcard()` false); `Host a b` followed by `Host a` raises no `duplicate-host`; `Host # c` keeps its current name; `isConcreteName` results are unchanged; `Host web-1 # prod` is now concrete. |
 | M1 | A write addressed by a name that is only one of several patterns of a `Host` line (`edit db-1` with `Host db-1 db-2 # pair`) returns `*MultiPatternError` with the text `"Host db-1 db-2" in <file> has several patterns, which sshm cannot edit` (the line text is the Name of the block, `<file>` its file). It applies in the main file, the managed file and other included files, and wins over the import hint (import cannot move such a line). |
@@ -77,7 +77,7 @@ mains, advice for tools that do not follow `Include` (README notes only, see X5)
 |---|---|
 | X1 | Deleted: `config.Write`, `writeDevPodBlock`, `writeDisabledBlock`, `DisabledBlockText`, `disabledBlockSpans`, `RawBlock` assignment, `ConfigFile.Comments`/`CommentBlock`/`flushComment` (only if nothing reads them), `App.load`/`App.save` rewrite paths, `ensureInMain`, `ensureGroupInMain`, `initLegacy`, `misplacedWildcardNote`, `SetupHint`, every `activeView() == nil` legacy branch of edit/forward/groups/init/cert/`CheckEdit`. Kept (see section 3): the helpers `Doc` needs, the read-side disabled-host code, `ensureInMainLoaded`, `activeView`/`viewOf`/`ManagedActive`, the legacy group-sidecar read gate. |
 | X2 | Verification of X1: `go build`, `go vet`, `go test -race -count=1 ./...` green; `grep` finds no remaining reference to the deleted identifiers; no unreferenced non-test function is left behind by the removal (implementer reports the check used). |
-| X3 | Layering unchanged: `internal/tui` and `internal/cli` import only `app` and `domain`; `domain` imports no internal package. |
+| X3 | Layering unchanged: `internal/tui` imports only `app` and `domain`; `internal/cli` imports `app`, `domain` and (only `tui.go`) `internal/tui`, never `internal/config`; `domain` imports no internal package. |
 | X4 | Existing tests that used legacy writes are migrated to managed (set-up) fixtures. Assertions may get stricter, never looser; tests that only exercised the removed writer (round trip, `config.Write`) are deleted. The report lists every changed or deleted test file with a reason. Frozen P3-P6 files are not edited, except the ones that cannot compile or whose subject is removed, each named in the report. |
 | X5 | README and ARCHITECTURE: no legacy mode; first run is `sshm init` (fresh machine) or `sshm setup`; a limits list (multi-pattern `Host` lines, DevPod and `Match` blocks stay in the main file; clients that do not follow `Include` do not see managed hosts; a dotfile manager that overwrites the main file drops the Include; SIGKILL during a save). |
 
@@ -120,3 +120,15 @@ calls `InitFresh` first and `InitDefaultsReport` only when `fresh` is false.
 11. **`MultiPatternError.File`** is the `SourceFile` the host carries, the same string `UnmanagedHostError.File` uses.
 12. **G5:** the `printHint(a)` calls in the CLI (add, edit, forward x2, cert sign, groups disable/enable, init) and the
     function itself are removed with `SetupHint`.
+13. **N1 binding wording.** `Name` = the single pattern; for several patterns the patterns joined by one space with the
+    comment stripped (`db-1 db-2`); for no pattern the raw argument text. `hostKey` therefore equals `Host.Name` and is
+    removed (N2). M1/M2 messages and `MultiPatternError.Host` use this Name. The existing `config/p2c_test.go`
+    legacy round-trip test and every test that expects the raw text are migrated or deleted (X4).
+14. **Side effect, accepted:** `Host web-1 # prod` plus `Host web-1` in one file is now a `duplicate-host` (ssh treats
+    them as the same host); `Host * # c` counts as the default `Host *`.
+15. **R1 for `setup`:** a signal during its verified write restores the pre-write state completely (created `config.d`
+    and `sshm.conf` removed, main file bytes restored), as its existing undo does. The message names the main or the managed
+    file. **R2 for `setup`** names the newest backup of the main file; for `import` either file's backup is accepted.
+16. **G3 argument errors** that stay first: cobra errors and `edit` without any flag (`no changes specified`). The
+    `forward` RunE checks (`--remote` with `--dynamic`, no specs) are not pinned.
+17. **Whitespace and quotes in names:** `Host a<TAB>b` has Name `a b`; for `Host "a b" c` the Name is `a b c` and the unquoted patterns `a b` and `c` are valid typed addresses for M1. A `Host "a b"` versus `Host a b` Name collision stays as today (not a `duplicate-host`).
