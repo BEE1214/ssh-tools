@@ -48,9 +48,16 @@ func (d *Doc) InsertLine(at int, line string) error {
 // AppendRaw appends lines at the end. When the file does not already end with
 // a blank line and has content, one blank line separates the old and the new
 // content; the existing lines (blank ones at the end too) are never touched.
-func (d *Doc) AppendRaw(lines []string) {
+// Like InsertLine it rejects lines containing CR or LF (ErrBadValue); the Doc
+// stays untouched then, also when only a later line is bad.
+func (d *Doc) AppendRaw(lines []string) error {
+	for _, l := range lines {
+		if strings.ContainsAny(l, "\r\n") {
+			return fmt.Errorf("%w: line %q", ErrBadValue, l)
+		}
+	}
 	if len(lines) == 0 {
-		return
+		return nil
 	}
 	out := append([]string(nil), d.Lines...)
 	if n := len(out); n > 0 && strings.TrimSpace(out[n-1]) != "" {
@@ -58,6 +65,7 @@ func (d *Doc) AppendRaw(lines []string) {
 	}
 	d.Lines = append(out, lines...)
 	d.unterminated = false
+	return nil
 }
 
 // Span is a half-open range [From, To) of 0-based line indices.
