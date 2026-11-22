@@ -104,6 +104,17 @@ func caKeyPath() (string, error) {
 // SignCert signs a public key with the CA key, producing a short-lived
 // certificate. It wraps `ssh-keygen -s`.
 func (a *App) SignCert(opts SignOpts) (string, error) {
+	// In managed mode the CertificateFile line goes to the managed file, so a
+	// host defined elsewhere is refused BEFORE a certificate is created that
+	// could not be recorded (R8). An unreadable config is left to the code
+	// below, which reports it as before.
+	if opts.HostName != "" {
+		if v, err := a.activeView(); err == nil && v != nil {
+			if err := v.unmanaged(opts.HostName); err != nil {
+				return "", err
+			}
+		}
+	}
 	// Resolve CA key.
 	caKey := opts.CAKey
 	if caKey == "" {
@@ -309,6 +320,11 @@ func (a *App) RevokeCert(path string) error {
 // setting it to empty and saving. This is used by RevokeCert since EditHost
 // with an empty map is a no-op.
 func (a *App) ClearCertificateFile(name string) error {
+	if v, err := a.activeView(); err != nil {
+		return err
+	} else if v != nil {
+		return a.clearCertificateFileManaged(v, name)
+	}
 	if err := a.ensureInMain(name); err != nil {
 		return err
 	}

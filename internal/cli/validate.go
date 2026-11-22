@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/adamdvorsky/ssh-tools/internal/app"
 )
 
 func newValidateCmd() *cobra.Command {
@@ -72,6 +74,15 @@ func newGroupsCmd() *cobra.Command {
 	return cmd
 }
 
+// groupBlocksPath is the file whose host blocks a group disable/enable moves:
+// the managed file in managed mode, the main config in legacy mode.
+func groupBlocksPath(a *app.App) string {
+	if active, err := a.ManagedActive(); err == nil && active {
+		return a.ManagedPath()
+	}
+	return a.ConfigPath()
+}
+
 func newGroupsDisableCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "disable <group>",
@@ -88,7 +99,8 @@ e.g. production deployments.`,
 			if err := a.DisableGroup(args[0]); err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "group %q disabled — blocks commented out of %s\n", args[0], a.ConfigPath())
+			fmt.Fprintf(os.Stderr, "group %q disabled — blocks commented out of %s\n", args[0], groupBlocksPath(a))
+			printHint(a)
 			return nil
 		},
 	}
@@ -109,7 +121,8 @@ removed from the sidecar state file.`,
 			if err := a.EnableGroup(args[0]); err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "group %q enabled — blocks restored in %s\n", args[0], a.ConfigPath())
+			fmt.Fprintf(os.Stderr, "group %q enabled — blocks restored in %s\n", args[0], groupBlocksPath(a))
+			printHint(a)
 			return nil
 		},
 	}
@@ -130,14 +143,17 @@ replaced in place and not moved; if other hosts follow it, a note is printed
 because its values then override theirs.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a := newApp()
-			note, err := a.InitDefaults()
+			written, note, err := a.InitDefaultsReport()
 			if err != nil {
 				return err
 			}
 			if note != "" {
 				fmt.Fprintln(os.Stderr, "note: "+note)
 			}
-			fmt.Fprintf(os.Stderr, "Host * defaults block written to %s\n", a.ConfigPath())
+			if written {
+				fmt.Fprintf(os.Stderr, "Host * defaults block written to %s\n", a.ConfigPath())
+				printHint(a)
+			}
 			return nil
 		},
 	}

@@ -58,7 +58,11 @@ sshm groups                  # list groups + enable/disable state
 sshm groups disable <group>  # disable a group (hard gate, see below)
 sshm groups enable <group>   # re-enable a disabled group
 sshm init                    # generate/repair Host * defaults block
+sshm setup [--dry-run]       # keep sshm's hosts in ~/.ssh/config.d/sshm.conf (one Include line is added to the ssh config)
+sshm import [--apply]        # move plain Host blocks into that file (dry run unless --apply)
 ```
+
+A legacy group state file `<ssh config>.sshm-groups` is not migrated by `setup`; `import` moves it for the groups it moves. A comment directly above a `Host` line (no blank line between) moves with that host on `import`, including a file-header comment that touches the first host.
 
 ### Connect
 
