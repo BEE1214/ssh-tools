@@ -2,7 +2,6 @@ package tui
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -58,30 +57,24 @@ Host solo
   Port 2222
 `
 
-// newTestModel writes cfg to a temp file and returns a Model over it.
+// newTestModel returns a Model over cfg in MANAGED mode (editing available):
+// cfg is the managed file, a main file Includes it (impl_helpers_test.go). The
+// returned path is the managed file. Tests of the legacy mode use
+// newLegacyTestModel.
 func newTestModel(t *testing.T, cfg string) (Model, *app.App, string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "config")
-	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	a := app.NewAppWithPath(path)
-	m := New(a)
-	m.editable = true
-	return m, a, path
+	return newManagedTestModel(t, cfg)
 }
 
-// withDisabledDeploy returns a model over fixture with group "deploy"
-// disabled via the app layer.
+// withDisabledDeploy returns a managed model over fixture with group "deploy"
+// disabled via the app layer. The path is the managed file.
 func withDisabledDeploy(t *testing.T) (Model, *app.App, string) {
 	t.Helper()
 	_, a, path := newTestModel(t, fixture)
 	if err := a.DisableGroup("deploy"); err != nil {
 		t.Fatal(err)
 	}
-	m := New(a)
-	m.editable = true
-	return m, a, path
+	return New(a), a, path
 }
 
 func readFile(t *testing.T, path string) string {

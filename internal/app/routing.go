@@ -30,11 +30,17 @@ func (a *App) activeView() (*managedView, error) {
 	if err != nil {
 		return nil, err
 	}
+	return a.viewOf(l), nil
+}
+
+// viewOf returns the managed view of an already loaded configuration, or nil in
+// legacy mode. activeView and Snapshot decide the mode through it.
+func (a *App) viewOf(l *config.Loaded) *managedView {
 	f, ok := l.Lookup(a.ManagedPath())
 	if !ok || f.Conditional {
-		return nil, nil
+		return nil
 	}
-	return &managedView{l: l, file: f}, nil
+	return &managedView{l: l, file: f}
 }
 
 // managedHost returns the block of the managed file that defines name.
@@ -153,19 +159,29 @@ func sshKeyName(key string) string {
 // file of the block, see applyChange).
 var wholeListKeys = map[string]bool{"identityfile": true, "certificatefile": true}
 
-func (a *App) editHostManaged(v *managedView, name string, changes map[string]string) error {
+// editTarget returns the managed-file block an edit of name would change, or
+// the refusal EditHost returns: unmanaged, not found, disabled, DevPod.
+// CheckEdit uses it too, so a preview refuses exactly what the write refuses.
+func (v *managedView) editTarget(name string) (domain.Host, error) {
 	if err := v.unmanaged(name); err != nil {
-		return err
+		return domain.Host{}, err
 	}
 	h, ok := v.managedHost(name)
 	if !ok {
-		return fmt.Errorf("host %q not found", name)
+		return domain.Host{}, fmt.Errorf("host %q not found", name)
 	}
 	if err := ensureEditable(h); err != nil {
-		return err
+		return domain.Host{}, err
 	}
 	if h.Source == domain.SourceDevPod {
-		return fmt.Errorf("host %q is managed by DevPod — edit via DevPod instead", name)
+		return domain.Host{}, fmt.Errorf("host %q is managed by DevPod — edit via DevPod instead", name)
+	}
+	return h, nil
+}
+
+func (a *App) editHostManaged(v *managedView, name string, changes map[string]string) error {
+	if _, err := v.editTarget(name); err != nil {
+		return err
 	}
 
 	keys := make([]string, 0, len(changes))
