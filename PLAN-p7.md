@@ -132,3 +132,18 @@ calls `InitFresh` first and `InitDefaultsReport` only when `fresh` is false.
 16. **G3 argument errors** that stay first: cobra errors and `edit` without any flag (`no changes specified`). The
     `forward` RunE checks (`--remote` with `--dynamic`, no specs) are not pinned.
 17. **Whitespace and quotes in names:** `Host a<TAB>b` has Name `a b`; for `Host "a b" c` the Name is `a b c` and the unquoted patterns `a b` and `c` are valid typed addresses for M1. A `Host "a b"` versus `Host a b` Name collision stays as today (not a `duplicate-host`).
+
+## 8. Review notes after the implementation (binding for later phases)
+18. **`Doc.lookup` preference (M2, implemented):** when a single-pattern block and a multi-pattern line both name a host in
+    one file, the single-pattern block is the target. Before P7 this was an "ambiguous" refusal. ssh applies both
+    blocks; the verified save checks the requested value in `ssh -G` and rolls back when a first-wins option of the
+    multi-pattern block shadows the edit.
+19. **TUI and signals (known gap):** the CLI path of R1 is deterministic. In the TUI, bubbletea handles the same signals
+    and tears the program down while the save's rollback runs in a command goroutine; nothing makes `main` wait for it.
+    Observed: 12 of 12 runs (SIGINT, SIGTERM, SIGHUP) restored the files byte for byte, but the TUI prints no
+    `interrupted:` text and exits 1 (SIGINT) or 0 (SIGTERM). A fix (wait for an in-flight save before the program
+    returns) belongs to the refactoring review.
+20. **Known gaps, not fixed here:** `cert sign --host` still creates the certificate before `EditHost`, so an edit that
+    fails afterwards (verify rollback) leaves a certificate without a config change; `init` on a dangling symlinked main
+    file creates the link target (same as `setup`); production code used only by tests (`ErrNotImplemented`,
+    `ManagedActive`, `RunForwardNotify`) is left for the refactoring review.

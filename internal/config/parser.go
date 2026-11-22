@@ -345,8 +345,10 @@ func splitKeyword(line string) (key, value string, ok bool) {
 // hostLineName returns the argument text of a (trimmed) Host line: what
 // follows the keyword and its separator (blanks and at most one "=", which
 // ssh skips the same way), with trailing blanks removed and nothing else
-// touched (`Host "a b" # c` gives `"a b" # c`). It is the Name of a line
-// without any pattern (`Host # c`).
+// touched (`Host "a b" # c` gives `"a b" # c`). It is the host's Name ONLY
+// for a line without any pattern (`Host # c`, `Host ""`); otherwise Name is
+// the patterns joined by one space (see Parse), which differs from this text
+// as soon as there is a quote, a comment or extra blanks.
 func hostLineName(trimmed string) string {
 	_, value, _ := splitKeyword(trimmed)
 	return value

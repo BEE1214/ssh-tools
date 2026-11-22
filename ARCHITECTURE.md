@@ -473,7 +473,13 @@ Editing one host should not reformat anything else. sshm changes only the lines 
 
 The one append to your own file is the `Host *` block of `sshm init`; `sshm setup` adds the one `Include` line and `sshm import` removes the blocks it moves.
 
-Known limits: a `Host` line with several patterns cannot be edited; DevPod and `Match` blocks stay in the main file; clients that do not follow `Include` do not see the managed hosts; a dotfile manager that overwrites the main file drops the `Include` line (writes then fail with `ErrNotSetUp`); SIGKILL during a save can leave the file as written, the next save refuses and names the newest backup.
+#### Known limits
+
+- A `Host` line with several patterns (`Host db-1 db-2`) cannot be edited; the refusal says why.
+- DevPod and `Match` blocks stay in the main file; sshm never edits them.
+- Clients that do not follow `Include` (for example libraries that parse `~/.ssh/config` themselves) do not see the managed hosts.
+- A dotfile manager that overwrites the main file drops the `Include` line; writes then fail with `ErrNotSetUp` until `sshm setup` is run again.
+- SIGKILL during a save can leave the file as written; the next save refuses and names the newest backup.
 
 ### 3. Domain layer is pure
 
