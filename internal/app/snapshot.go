@@ -15,18 +15,20 @@ import (
 type HostEntry struct {
 	// Host.Name is the name a user types, the one pattern of the Host line; a
 	// trailing comment is not part of it (`Host web-9 # prod box` is web-9).
-	// It is NOT the raw argument text the parser keeps. A line with several
-	// patterns keeps its line text, as there is no single name to type.
+	// A line with several patterns has them joined by one space ("db-1 db-2"),
+	// as there is no single name to type.
 	domain.Host
 	Gated bool
 	// Included is true when the host is defined only in files pulled in by
 	// Include, not in the main config file. sshm cannot edit those yet.
 	Included bool
 	// ReadOnlyReason is "" when the location allows edit, duplicate and delete
-	// (managed mode: the host is defined in the managed file; legacy mode: it
-	// is defined in the main file). Otherwise it is the refusal message the
-	// write would return (the *UnmanagedHostError text, or the legacy
-	// "included" refusal text). Gated and DevPod hosts are NOT reflected here.
+	// (set-up config: the host is defined in the managed file; config that is
+	// not set up: it is defined in the main file). Otherwise it is the refusal
+	// message the write would return: the *MultiPatternError text for a line
+	// with several patterns, the *UnmanagedHostError text, or the "included"
+	// refusal text of a config that is not set up. Gated and DevPod hosts are
+	// NOT reflected here.
 	ReadOnlyReason string
 }
 
@@ -70,24 +72,12 @@ func (a *App) Snapshot() (Snapshot, error) {
 	if v == nil {
 		snap.ManagedProblem = managedLoadProblem(l, snap.ManagedPath)
 	}
-	// The parser keeps the raw argument text of a Host line as Name (a trailing
-	// comment included), the legacy writer needs it. Everything a UI does with
-	// a host goes by the name a user types, so every lookup below runs on the
-	// clean name: ownership (hostKey) and the legacy include check, which
-	// matches Name, on a copy of the host list that carries the clean names.
-	clean := make([]domain.Host, len(l.Hosts))
-	for i, h := range l.Hosts {
-		h.Name = hostKey(h)
-		clean[i] = h
-	}
-	byKey := *l
-	byKey.Hosts = clean
-	for _, h := range clean {
+	for _, h := range l.Hosts {
 		snap.Hosts = append(snap.Hosts, HostEntry{
 			Host:           h,
 			Gated:          isHostGated(h, state),
-			Included:       ensureInMainLoaded(&byKey, h.Name) != nil,
-			ReadOnlyReason: readOnlyReason(&byKey, v, h.Name),
+			Included:       ensureInMainLoaded(l, h.Name) != nil,
+			ReadOnlyReason: readOnlyReason(l, v, h),
 		})
 	}
 	return snap, nil
@@ -157,14 +147,19 @@ func shortLoadReason(warning, managed string) string {
 	return reason
 }
 
-// readOnlyReason is the refusal a write to name would return (guardWrite, on
-// the configuration already loaded): "" when sshm may write the host's block.
-func readOnlyReason(l *config.Loaded, v *managedView, name string) string {
+// readOnlyReason is the refusal a write to h would return, on the configuration
+// already loaded: "" when sshm may write the host's block. A line with several
+// patterns is read-only in both modes (M3); it is answered with its own
+// location, whatever other blocks carry the same text.
+func readOnlyReason(l *config.Loaded, v *managedView, h domain.Host) string {
+	if !singleName(h) {
+		return (&MultiPatternError{Host: h.Name, File: h.SourceFile, Line: h.LineStart}).Error()
+	}
 	var err error
 	if v != nil {
-		err = v.unmanaged(name)
+		err = v.unmanaged(h.Name)
 	} else {
-		err = ensureInMainLoaded(l, name)
+		err = ensureInMainLoaded(l, h.Name)
 	}
 	if err != nil {
 		return err.Error()
@@ -214,39 +209,16 @@ func (a *App) CheckNewHost(h domain.Host) ([]domain.Issue, error) {
 
 // CheckEdit previews the validation issues for host name after applying
 // changes (same semantics as EditHost). It writes nothing. It returns the
-// same refusal errors as EditHost (not found, disabled, DevPod-managed).
+// same refusal errors as EditHost (not set up, not found, disabled,
+// DevPod-managed, not in the managed file, several patterns).
 func (a *App) CheckEdit(name string, changes map[string]string) ([]domain.Issue, error) {
-	v, err := a.activeView()
+	v, err := a.gate()
 	if err != nil {
 		return nil, err
 	}
-	if v != nil {
-		h, err := v.editTarget(name)
-		if err != nil {
-			return nil, err
-		}
-		for key, value := range changes {
-			applyChange(&h, key, value)
-		}
-		return domain.Validate([]domain.Host{h}), nil
-	}
-	if err := a.ensureInMain(name); err != nil {
-		return nil, err
-	}
-	cfg, err := a.load()
+	h, err := v.editTarget(name)
 	if err != nil {
 		return nil, err
-	}
-	idx := findHostIndex(cfg.Hosts, name)
-	if idx == -1 {
-		return nil, fmt.Errorf("host %q not found", name)
-	}
-	h := cfg.Hosts[idx]
-	if err := ensureEditable(h); err != nil {
-		return nil, err
-	}
-	if h.Source == domain.SourceDevPod {
-		return nil, fmt.Errorf("host %q is managed by DevPod — edit via DevPod instead", name)
 	}
 	for key, value := range changes {
 		applyChange(&h, key, value)

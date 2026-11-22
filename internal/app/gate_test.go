@@ -39,7 +39,7 @@ func TestSignCertDisabledHost(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	a := newTestApp(t, "Host deploy-acq\n  HostName 192.0.2.10\n  User deploy\n  IdentityFile "+key+"\n")
+	a := newSetUpTestApp(t, "Host deploy-acq\n  HostName 192.0.2.10\n  User deploy\n  IdentityFile "+key+"\n")
 	if err := a.DisableGroup("deploy"); err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestSignCertDisabledHost(t *testing.T) {
 // after it was disabled (not commented out) is still gated via the state file.
 func TestGateCoversHostAddedToDisabledGroup(t *testing.T) {
 	noExecPath(t)
-	a := newTestApp(t, groupFixture)
+	a := newSetUpTestApp(t, groupFixture)
 	if err := a.DisableGroup("deploy"); err != nil {
 		t.Fatal(err)
 	}
@@ -60,12 +60,12 @@ func TestGateCoversHostAddedToDisabledGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg, err := a.load()
+	l, err := a.loadAll()
 	if err != nil {
 		t.Fatal(err)
 	}
-	idx := findHostIndex(cfg.Hosts, "deploy-new")
-	if idx == -1 || cfg.Hosts[idx].Disabled {
+	idx := findHostIndex(l.Hosts, "deploy-new")
+	if idx == -1 || l.Hosts[idx].Disabled {
 		t.Fatalf("test setup: deploy-new must be a present, not-commented-out host (idx=%d)", idx)
 	}
 
@@ -110,11 +110,11 @@ func TestGateCoversHostAddedToDisabledGroup(t *testing.T) {
 	if err := a.EnableGroup("deploy"); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err = a.load()
+	l, err = a.loadAll()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.ensureNotDisabled(cfg, "deploy-new"); err != nil {
+	if err := a.ensureHostNotDisabled(l.Hosts, "deploy-new"); err != nil {
 		t.Errorf("deploy-new still gated after enable: %v", err)
 	}
 }

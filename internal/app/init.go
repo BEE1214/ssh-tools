@@ -1,83 +1,31 @@
 package app
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/adamdvorsky/ssh-tools/internal/domain"
 )
 
-// InitDefaults generates or repairs the Host * defaults block of the config
-// file. A new block is appended as the LAST host block: ssh uses the first
-// value found for each option, so a catch-all Host * only supplies defaults
-// when it comes after the specific hosts. An existing Host * block is
-// replaced in place and never moved; if other hosts follow it (in file order,
-// included files inlined), the returned note says its values override theirs.
-//
-// In managed mode (PLAN-p3-p4.md R11) a new block is appended to the END of the
-// main file only when no Host * exists in any loaded file; an existing one is
-// never rewritten, and note says where it is.
+// InitDefaults generates the Host * defaults block of a set-up config
+// (PLAN-p3-p4.md R11): a new block is appended as the LAST host block of the
+// main file, because ssh uses the first value found for each option, so a
+// catch-all Host * only supplies defaults when it comes after the specific
+// hosts. It is written only when no Host * exists in any loaded file; an
+// existing one is never rewritten, and note says where it is. A config that is
+// not set up gets ErrNotSetUp (use InitFresh for a machine without a config).
 func (a *App) InitDefaults() (note string, err error) {
 	_, note, err = a.InitDefaultsReport()
 	return note, err
 }
 
 // InitDefaultsReport is InitDefaults that also says whether a block was
-// written (false: managed mode found an existing Host *, see note).
+// written (false: an existing Host * was found, see note).
 func (a *App) InitDefaultsReport() (written bool, note string, err error) {
-	if v, err := a.activeView(); err != nil {
+	v, err := a.gate()
+	if err != nil {
 		return false, "", err
-	} else if v != nil {
-		return a.initManaged(v)
 	}
-	note, err = a.initLegacy()
-	return err == nil, note, err
-}
-
-func (a *App) initLegacy() (note string, err error) {
-	cfg, err := a.load()
-	if err != nil {
-		return "", err
-	}
-
-	defaults := defaultHost()
-
-	found := false
-	for i, h := range cfg.Hosts {
-		if h.IsWildcard() {
-			cfg.Hosts[i] = defaults
-			found = true
-			break
-		}
-	}
-	if !found {
-		cfg.Hosts = append(cfg.Hosts, defaults)
-	}
-	if err := a.save(cfg); err != nil {
-		return "", err
-	}
-	if found {
-		// After the save, so the reported line is the one in the file now.
-		note = a.misplacedWildcardNote()
-	}
-	return note, nil
-}
-
-// misplacedWildcardNote reports a Host * block of the main file that is
-// followed by other host blocks. Best effort: "" if the config cannot be
-// loaded with its includes.
-func (a *App) misplacedWildcardNote() string {
-	l, err := a.loadAll()
-	if err != nil {
-		return ""
-	}
-	for i, h := range l.Hosts {
-		if h.Name != "*" || h.SourceFile != l.MainPath() || i == len(l.Hosts)-1 {
-			continue
-		}
-		return fmt.Sprintf("Host * is at line %d, before other hosts; its values override theirs (ssh uses the first value found). Move it to the end.", h.LineStart)
-	}
-	return ""
+	return a.initManaged(v)
 }
 
 // defaultHost returns the recommended Host * block with security and

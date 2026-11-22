@@ -444,23 +444,3 @@ func TestLoadIgnoresIncludeInsideDisabledRegion(t *testing.T) {
 		}
 	}
 }
-
-// The scanner must not change what Write produces: Include lines stay where
-// they were, with or without a following host.
-func TestWriteKeepsIncludeLines(t *testing.T) {
-	in := "Include /example/a.conf\n\nHost web-1\n  HostName 10.0.0.1\n"
-	cfg, err := Parse([]byte(in))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.Includes) != 1 || cfg.Includes[0].Line != 1 {
-		t.Fatalf("includes = %+v", cfg.Includes)
-	}
-	out, err := Write(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(string(out), "Include /example/a.conf\n") {
-		t.Fatalf("Write dropped or moved the Include line:\n%s", out)
-	}
-}

@@ -525,14 +525,10 @@ func TestImport_SecondRunHasNothingToImport(t *testing.T) {
 func TestImport_DisabledGroupsMoveWithMarkersAndState(t *testing.T) {
 	t.Parallel()
 	mgNeedSSH(t)
-	// Build the disabled state with the (legacy) group commands, then switch to managed mode.
-	e := newMgEnv(t, groupFixture, mgAbsent)
-	mgRequireNoErr(t, e.a.DisableGroup("deploy"))
-	if !mgExists(mgSidecar(e.main)) {
-		t.Fatal("fixture: legacy DisableGroup wrote no sidecar")
-	}
-	mgWrite(t, e.main, "Include "+e.managed+"\n"+e.readMain(t), 0o600)
-	mgWrite(t, e.managed, mgManagedHeader, 0o600)
+	// The disabled state an earlier sshm left in the main file: the group's blocks
+	// between markers there, and the group listed in the main file's sidecar.
+	e := newMgEnv(t, "Include @M@\n"+disabledMainText, mgManagedHeader)
+	mgWrite(t, mgSidecar(e.main), "# sshm group state\ndeploy\n", 0o600)
 	e.backdate(t)
 
 	statesBefore, err := e.a.ListGroupsState()

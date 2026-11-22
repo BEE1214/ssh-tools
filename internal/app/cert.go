@@ -104,15 +104,17 @@ func caKeyPath() (string, error) {
 // SignCert signs a public key with the CA key, producing a short-lived
 // certificate. It wraps `ssh-keygen -s`.
 func (a *App) SignCert(opts SignOpts) (string, error) {
-	// In managed mode the CertificateFile line goes to the managed file, so a
-	// host defined elsewhere is refused BEFORE a certificate is created that
-	// could not be recorded (R8). An unreadable config is left to the code
-	// below, which reports it as before.
+	// With a host the CertificateFile line goes to the managed file: the gate
+	// (P7 G1) and then a host defined elsewhere are refused BEFORE the CA key
+	// is looked up and before a certificate is created that could not be
+	// recorded (R8).
 	if opts.HostName != "" {
-		if v, err := a.activeView(); err == nil && v != nil {
-			if err := v.unmanaged(opts.HostName); err != nil {
-				return "", err
-			}
+		v, err := a.gate()
+		if err != nil {
+			return "", err
+		}
+		if err := v.unmanaged(opts.HostName); err != nil {
+			return "", err
 		}
 	}
 	// Resolve CA key.
@@ -320,30 +322,11 @@ func (a *App) RevokeCert(path string) error {
 // setting it to empty and saving. This is used by RevokeCert since EditHost
 // with an empty map is a no-op.
 func (a *App) ClearCertificateFile(name string) error {
-	if v, err := a.activeView(); err != nil {
-		return err
-	} else if v != nil {
-		return a.clearCertificateFileManaged(v, name)
-	}
-	if err := a.ensureInMain(name); err != nil {
-		return err
-	}
-	cfg, err := a.load()
+	v, err := a.gate()
 	if err != nil {
 		return err
 	}
-
-	idx := findHostIndex(cfg.Hosts, name)
-	if idx == -1 {
-		return nil // host not found, nothing to clear
-	}
-	if err := ensureEditable(cfg.Hosts[idx]); err != nil {
-		return err
-	}
-
-	// Every CertificateFile line of the block goes, not only the first.
-	cfg.Hosts[idx].CertificateFile, cfg.Hosts[idx].CertificateFiles = singleFile("")
-	return a.save(cfg)
+	return a.clearCertificateFileManaged(v, name)
 }
 
 // expandTilde replaces a leading ~ with the home directory.

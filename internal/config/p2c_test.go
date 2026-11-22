@@ -1,8 +1,6 @@
 package config
 
 import (
-	"bytes"
-	"fmt"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -52,12 +50,12 @@ func legacyConfig(line string) string {
 	return line + "\n  User hit\n\nHost other\n  User o\n\nHost *\n  User fallback\n"
 }
 
-// TestLegacyParseWriteKeepsHostLines: Parse stores the raw argument text in
-// Name and what ssh reads in Patterns; Write puts the raw text back, so a
-// Parse -> Write cycle keeps the bytes after "Host " (HEAD behaviour, lost in
-// P2b: `Host # c` became a bare, ssh-fatal "Host ", `Host "a b"` became two
-// patterns) and a second cycle changes nothing.
-func TestLegacyParseWriteKeepsHostLines(t *testing.T) {
+// TestParseHostLineSpellings: Parse reads every spelling of a Host line into
+// the patterns ssh takes from it (Patterns) and attaches the options to the
+// block. The Name of such a line is pinned by hostname_test.go (P7 N1); here
+// only a line without any pattern (`Host # c`, `Host ""`) must keep its
+// argument text as the name.
+func TestParseHostLineSpellings(t *testing.T) {
 	for _, c := range legacyHostLines {
 		in := legacyConfig(c.line)
 		cfg, err := Parse([]byte(in))
@@ -66,50 +64,14 @@ func TestLegacyParseWriteKeepsHostLines(t *testing.T) {
 			continue
 		}
 		h := cfg.Hosts[0]
-		if h.Name != c.name {
-			t.Errorf("%q: Name = %q, want the raw argument text %q", c.line, h.Name, c.name)
-		}
 		if h.Patterns == nil || !reflect.DeepEqual(h.Patterns, c.patterns) {
 			t.Errorf("%q: Patterns = %#v, want %#v", c.line, h.Patterns, c.patterns)
 		}
 		if h.User != "hit" {
 			t.Errorf("%q: options not attached: %+v", c.line, h)
 		}
-
-		out, err := Write(cfg)
-		if err != nil {
-			t.Errorf("%q: Write: %v", c.line, err)
-			continue
-		}
-		lines := strings.Split(string(out), "\n")
-		if lines[0] != "Host "+c.name {
-			t.Errorf("%q: Write emits %q, want %q", c.line, lines[0], "Host "+c.name)
-		}
-		// An ordinary "Host text" line comes back byte-for-byte (minus
-		// surrounding blanks, which Parse has always trimmed). The other
-		// spellings (tab, "=", keyword casing) come back as "Host text".
-		if strings.HasPrefix(c.line, "Host ") && !strings.HasPrefix(c.line, "Host =") && lines[0] != strings.TrimSpace(c.line) {
-			t.Errorf("%q: Host line bytes changed to %q", c.line, lines[0])
-		}
-		for _, l := range lines {
-			if strings.TrimSpace(l) == "Host" {
-				t.Errorf("%q: Write emitted a bare Host line (fatal for ssh):\n%s", c.line, out)
-			}
-		}
-
-		// Stable: the second cycle reads the same host and writes the same bytes.
-		cfg2, err := Parse(out)
-		if err != nil || len(cfg2.Hosts) != 3 {
-			t.Errorf("%q: re-Parse hosts=%v err=%v\n%s", c.line, hostNames(cfg2), err, out)
-			continue
-		}
-		h2 := cfg2.Hosts[0]
-		if h2.Name != h.Name || !reflect.DeepEqual(h2.Patterns, h.Patterns) || h2.User != h.User || h2.Group != h.Group {
-			t.Errorf("%q: not stable: %+v then %+v", c.line, h, h2)
-		}
-		out2, err := Write(cfg2)
-		if err != nil || !bytes.Equal(out, out2) {
-			t.Errorf("%q: second Write differs (%v):\n%s---\n%s", c.line, err, out, out2)
+		if strings.Join(c.patterns, "") == "" && h.Name != c.name {
+			t.Errorf("%q: Name = %q, want the argument text %q for a line without pattern", c.line, h.Name, c.name)
 		}
 	}
 }
@@ -119,59 +81,6 @@ func TestLegacyParseWriteKeepsHostLines(t *testing.T) {
 func sshGRaw(cfg, host string) (out string, ok bool) {
 	b, err := exec.Command("ssh", "-F", cfg, "-G", "--", host).Output()
 	return string(b), err == nil
-}
-
-// TestLegacyParseWriteAgreesWithSSH: for every Host line ssh accepts, each
-// probe name resolves identically before and after a legacy Parse -> Write
-// cycle; a line ssh refuses (`Host ""`, a bare "Host") is refused before AND
-// after: the cycle makes nothing worse and nothing "better" by accident.
-func TestLegacyParseWriteAgreesWithSSH(t *testing.T) {
-	needSSH(t)
-	dir := t.TempDir()
-	cycle := func(t *testing.T, i int, in string) (before, after string) {
-		t.Helper()
-		before = write(t, filepath.Join(dir, fmt.Sprintf("before-%d", i)), in)
-		cfg, err := Parse([]byte(in))
-		if err != nil {
-			t.Fatalf("Parse: %v", err)
-		}
-		out, err := Write(cfg)
-		if err != nil {
-			t.Fatalf("Write: %v", err)
-		}
-		return before, write(t, filepath.Join(dir, fmt.Sprintf("after-%d", i)), string(out))
-	}
-	for i, c := range legacyHostLines {
-		before, after := cycle(t, i, legacyConfig(c.line))
-		for _, p := range c.probes {
-			b, bok := sshGRaw(before, p)
-			a, aok := sshGRaw(after, p)
-			if bok != c.sshOK {
-				t.Errorf("%q: ssh accepts the input = %v, the table says %v", c.line, bok, c.sshOK)
-			}
-			if bok != aok {
-				t.Errorf("%q probe %q: ssh accepted before=%v after=%v", c.line, p, bok, aok)
-			}
-			if b != a {
-				t.Errorf("%q probe %q: ssh -G differs after Parse->Write", c.line, p)
-			}
-		}
-	}
-
-	// A bare Host line (no argument) is fatal for ssh. It is not a Host line
-	// for the parser; outside a block it is kept as text, so ssh refuses the
-	// file before and after, exactly as with HEAD.
-	for i, in := range []string{
-		"Host\n  User hit\n\nHost other\n  User o\n",
-		"Host other\n  User o\n\nHost \n  User hit\n",
-	} {
-		before, after := cycle(t, 100+i, in)
-		_, bok := sshGRaw(before, "other")
-		_, aok := sshGRaw(after, "other")
-		if bok || aok {
-			t.Errorf("bare Host %q: ssh accepted before=%v after=%v, want both refused", in, bok, aok)
-		}
-	}
 }
 
 // TestPatternsDriveMatching: EffectiveConfig matches on Patterns, so a quoted
@@ -251,78 +160,4 @@ func inputHostArgs(text string) (enabled, disabledLines []string) {
 		}
 	}
 	return enabled, disabledLines
-}
-
-// legacyWriteKeepsHostLines runs the legacy Write(Parse(text)) and checks
-// that no Host line is lost, added or rewritten:
-//   - the Host lines of the output are exactly "Host <argument text>" of the
-//     input's enabled Host lines, in order (so never a bare "Host");
-//   - every commented-out Host line of a disabled region is in the output
-//     verbatim;
-//   - reading the output again gives the same hosts (raw name, patterns,
-//     disabled flag, group).
-func legacyWriteKeepsHostLines(text string) error {
-	cfg, err := Parse([]byte(text))
-	if err != nil {
-		return fmt.Errorf("Parse: %v", err)
-	}
-	out, err := Write(cfg)
-	if err != nil {
-		return fmt.Errorf("Write: %v", err)
-	}
-	wantArgs, wantDisabled := inputHostArgs(text)
-	var gotArgs []string
-	outLines := map[string]bool{}
-	for _, l := range strings.Split(string(out), "\n") {
-		outLines[l] = true
-		switch {
-		case strings.HasPrefix(l, "Host "):
-			gotArgs = append(gotArgs, l[5:])
-		case hostLineRe.MatchString(strings.TrimSpace(l)) || strings.EqualFold(strings.TrimSpace(l), "host"):
-			return fmt.Errorf("Write emitted an unexpected Host line %q:\n%s", l, out)
-		}
-	}
-	if !reflect.DeepEqual(gotArgs, wantArgs) {
-		return fmt.Errorf("Host lines changed by Write(Parse()):\n  input:  %q\n  output: %q\n%s", wantArgs, gotArgs, out)
-	}
-	for _, l := range wantDisabled {
-		if !outLines[l] {
-			return fmt.Errorf("disabled Host line %q lost by Write(Parse()):\n%s", l, out)
-		}
-	}
-	cfg2, err := Parse(out)
-	if err != nil {
-		return fmt.Errorf("re-Parse: %v\n%s", err, out)
-	}
-	type rec struct {
-		name     string
-		patterns string
-		disabled bool
-		group    string
-	}
-	recs := func(c *ConfigFile) []rec {
-		var rs []rec
-		for _, h := range c.Hosts {
-			rs = append(rs, rec{h.Name, strings.Join(h.Patterns, "\x00"), h.Disabled, h.Group})
-		}
-		return rs
-	}
-	if a, b := recs(cfg), recs(cfg2); !reflect.DeepEqual(a, b) {
-		return fmt.Errorf("hosts differ after Write(Parse()):\n  first:  %+v\n  second: %+v\n%s", a, b, out)
-	}
-	return nil
-}
-
-// The helper itself must see the P2b regression: a writer that emits the
-// patterns instead of the raw text is caught on the reviewer's inputs.
-func TestLegacyWriteKeepsHostLinesHelper(t *testing.T) {
-	for _, c := range legacyHostLines {
-		if err := legacyWriteKeepsHostLines(legacyConfig(c.line)); err != nil {
-			t.Errorf("%q: %v", c.line, err)
-		}
-	}
-	got, _ := inputHostArgs("Host # c\nHOST=x\nhost\ty z\n" + domain.DisabledMarkerStart("g") + "\n# Host off\n" + domain.DisabledMarkerEnd("g") + "\nHostName not-a-host-line\nHost\n")
-	if want := []string{"# c", "x", "y z"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("inputHostArgs = %q, want %q", got, want)
-	}
 }

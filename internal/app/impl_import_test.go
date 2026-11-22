@@ -214,14 +214,32 @@ func TestImplImport_DryRunReportsAConflictWithoutFailing(t *testing.T) {
 	mgRequireUnchanged(t, before, e.snap(t))
 }
 
-// The legacy group disable writes the adjacent hosts of a group between ONE pair
-// of markers: the entries split the region into consecutive ranges.
+// disabledMainText is groupFixture with the deploy group disabled, as a hand-owned
+// main file holds it after an earlier version of sshm disabled the group there:
+// the adjacent hosts of the group between ONE pair of markers, commented out.
+const disabledMainText = `Host web-1
+  HostName 10.0.0.1
+  User admin
+
+# sshm disabled group=deploy start
+# Host deploy-acq
+#   HostName 192.168.1.10
+#   User deploy
+
+# Host deploy-eu
+#   HostName 192.168.1.11
+#   User deploy
+# sshm disabled group=deploy end
+
+Host misc
+  HostName 10.0.0.9
+`
+
+// One pair of markers around many hosts: the entries split the region into
+// consecutive ranges.
 func TestImplImport_OneRegionManyHosts(t *testing.T) {
 	t.Parallel()
-	e := newMgEnv(t, groupFixture, mgAbsent)
-	mgRequireNoErr(t, e.a.DisableGroup("deploy"))
-	mgWrite(t, e.main, "Include "+e.managed+"\n"+e.readMain(t), 0o600)
-	mgWrite(t, e.managed, mgManagedHeader, 0o600)
+	e := newMgEnv(t, "Include @M@\n"+disabledMainText, mgManagedHeader)
 	orig := e.readMain(t)
 	res, err := e.a.Import(ImportOptions{})
 	mgRequireNoErr(t, err)
@@ -262,11 +280,8 @@ func TestImplImport_FileWithoutFinalNewline(t *testing.T) {
 func TestImplImport_OnlyMovedGroupsLeaveTheMainSidecar(t *testing.T) {
 	t.Parallel()
 	mgNeedSSH(t)
-	e := newMgEnv(t, groupFixture, mgAbsent)
-	mgRequireNoErr(t, e.a.DisableGroup("deploy"))
+	e := newMgEnv(t, "Include @M@\n"+disabledMainText, mgManagedHeader)
 	mgWrite(t, mgSidecar(e.main), "# state\nother\ndeploy\n", 0o600)
-	mgWrite(t, e.main, "Include "+e.managed+"\n"+e.readMain(t), 0o600)
-	mgWrite(t, e.managed, mgManagedHeader, 0o600)
 	mgWrite(t, mgSidecar(e.managed), "# state\nalready\n", 0o600)
 	_, err := e.a.Import(ImportOptions{Apply: true})
 	mgRequireNoErr(t, err)

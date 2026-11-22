@@ -128,7 +128,7 @@ func optionLines(t *testing.T, text, host, key string) []string {
 }
 
 func TestEditHostFileOptionReplacesEveryLine(t *testing.T) {
-	a := newTestApp(t, twoFilesFixture)
+	a := newSetUpTestApp(t, twoFilesFixture)
 	check := func(step, host, key string, want ...string) {
 		t.Helper()
 		if got := optionLines(t, configAfter(t, a), host, key); !reflect.DeepEqual(got, want) && !(len(got) == 0 && len(want) == 0) {

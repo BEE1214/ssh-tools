@@ -1,15 +1,16 @@
 package config
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/adamdvorsky/ssh-tools/internal/domain"
 )
 
-// TestWriteRefusesLineBreaks: no host value may contain CR/LF, otherwise a
-// value could inject extra config lines.
-func TestWriteRefusesLineBreaks(t *testing.T) {
+// TestBlockLinesRefusesLineBreaks: no host value may contain CR/LF, otherwise
+// a value could inject extra config lines.
+func TestBlockLinesRefusesLineBreaks(t *testing.T) {
 	inj := "a\nProxyCommand evil"
 	tests := []struct {
 		name string
@@ -28,22 +29,26 @@ func TestWriteRefusesLineBreaks(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, err := Write(&ConfigFile{Hosts: []domain.Host{tt.h}})
+			out, err := BlockLines(tt.h)
 			if err == nil {
-				t.Fatalf("Write succeeded, output:\n%s", out)
+				t.Fatalf("BlockLines succeeded, output:\n%s", strings.Join(out, "\n"))
 			}
-			if !strings.Contains(err.Error(), "line break") {
+			if !errors.Is(err, ErrBadValue) {
+				t.Errorf("error %v does not wrap ErrBadValue", err)
+			}
+			// A name with a line break is already refused as a name.
+			if tt.name != "name" && !strings.Contains(err.Error(), "line break") {
 				t.Errorf("unexpected error: %v", err)
 			}
 		})
 	}
 }
 
-// TestWriteAllowsNormalValues: the check does not reject ordinary hosts.
-func TestWriteAllowsNormalValues(t *testing.T) {
+// TestBlockLinesAllowsNormalValues: the check does not reject ordinary hosts.
+func TestBlockLinesAllowsNormalValues(t *testing.T) {
 	h := domain.Host{Name: "web-1", HostName: "10.0.0.1", User: "admin",
 		LocalForwards: []string{"8080 localhost:80"}, Extra: map[string]string{"ServerAliveInterval": "30"}}
-	if _, err := Write(&ConfigFile{Hosts: []domain.Host{h}}); err != nil {
-		t.Fatalf("Write: %v", err)
+	if _, err := BlockLines(h); err != nil {
+		t.Fatalf("BlockLines: %v", err)
 	}
 }

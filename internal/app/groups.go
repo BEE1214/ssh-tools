@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/adamdvorsky/ssh-tools/internal/config"
 	"github.com/adamdvorsky/ssh-tools/internal/domain"
 )
 
@@ -25,8 +24,9 @@ type groupState struct {
 // groupStatePath returns the sidecar state file path (respects the same
 // $SSH_AUTH_CONFIG override as the config file).
 //
-// In managed mode the sidecar belongs to the managed file
-// (<managed path>.sshm-groups, R10); in legacy mode to the main file.
+// On a set-up config the sidecar belongs to the managed file
+// (<managed path>.sshm-groups, R10); on one that is not set up it is the main
+// file's, which only the read paths (connect, copy, import) look at.
 func (a *App) groupStatePath() string {
 	if v, err := a.activeView(); err == nil && v != nil {
 		return a.managedGroupStatePath()
@@ -154,140 +154,33 @@ func disabledNames(hosts []domain.Host) []string {
 	return names
 }
 
-// ensureGroupInMain is the group form of the transitional write guard: group
-// disable/enable rewrites the main file, so it refuses when any member of the
-// group is defined in an included file (a group split across files would end
-// up half disabled). action is "disable" or "enable", used in the message.
-func (a *App) ensureGroupInMain(action, group string) error {
-	l, err := a.loadAll()
+// DisableGroup disables a group: host blocks are commented out of the managed
+// file (under marker comments) and the group is recorded in the sidecar state
+// file. After this, raw `ssh <host>` fails to resolve and sshm connect/copy
+// refuse the group's hosts. ErrNotSetUp comes before the group name check.
+func (a *App) DisableGroup(group string) error {
+	v, err := a.gate()
 	if err != nil {
 		return err
 	}
-	var parts []string
-	for _, h := range l.Hosts {
-		if h.Group != group || h.IsWildcard() || h.SourceFile == l.MainPath() {
-			continue
-		}
-		parts = append(parts, fmt.Sprintf("host %q is defined in %s (included)", h.Name, h.SourceFile))
-	}
-	if len(parts) > 0 {
-		return fmt.Errorf("cannot %s group %q: %s, which sshm cannot edit yet", action, group, strings.Join(parts, ", "))
-	}
-	return nil
-}
-
-// DisableGroup disables a group: host blocks are commented out of the ssh
-// config (under marker comments) and the group is recorded in the sidecar
-// state file. After this, raw `ssh <host>` fails to resolve and sshm
-// connect/copy refuse the group's hosts.
-func (a *App) DisableGroup(group string) error {
 	if err := domain.ValidateGroupName(group); err != nil {
 		return err
 	}
-	if v, err := a.activeView(); err != nil {
-		return err
-	} else if v != nil {
-		return a.disableGroupManaged(v, group)
-	}
-	if err := a.ensureGroupInMain("disable", group); err != nil {
-		return err
-	}
-	cfg, err := a.load()
-	if err != nil {
-		return err
-	}
-
-	// Collect the group's members from CURRENT host state. Enabled hosts get
-	// Disabled=true (the writer then emits them verbatim between markers);
-	// already-disabled hosts are left as-is.
-	targets := 0
-	changed := false
-	for i := range cfg.Hosts {
-		h := &cfg.Hosts[i]
-		if h.Disabled || h.Group != group {
-			continue
-		}
-		targets++
-		// Hosts outside this config file's line tracking (shouldn't happen
-		// for enabled hosts) are skipped defensively.
-		if h.LineStart <= 0 {
-			continue
-		}
-		h.Disabled = true
-		start := h.LineStart
-		if start < 1 {
-			start = 1
-		}
-		end := h.LineEnd
-		if end < start {
-			end = len(cfg.RawTextLines())
-		}
-		h.RawBlock = strings.Join(cfg.RawTextLines()[start-1:end], "\n")
-		changed = true
-	}
-	if targets == 0 {
-		return fmt.Errorf("group %q has no enabled hosts", group)
-	}
-	if changed {
-		if err := a.save(cfg); err != nil {
-			return err
-		}
-	}
-
-	// Record in the sidecar state file (idempotent).
-	state, err := a.readGroupState()
-	if err != nil {
-		return err
-	}
-	state[group] = true
-	return writeGroupState(a.groupStatePath(), state)
+	return a.disableGroupManaged(v, group)
 }
 
 // EnableGroup re-enables a disabled group: the commented host blocks between
 // the group's markers are restored verbatim and the group is removed from
-// the sidecar state file.
+// the sidecar state file. ErrNotSetUp comes before the group name check.
 func (a *App) EnableGroup(group string) error {
+	v, err := a.gate()
+	if err != nil {
+		return err
+	}
 	if err := domain.ValidateGroupName(group); err != nil {
 		return err
 	}
-	if v, err := a.activeView(); err != nil {
-		return err
-	} else if v != nil {
-		return a.enableGroupManaged(v, group)
-	}
-	if err := a.ensureGroupInMain("enable", group); err != nil {
-		return err
-	}
-	cfg, err := a.load()
-	if err != nil {
-		return err
-	}
-
-	restored := 0
-	for i := range cfg.Hosts {
-		h := &cfg.Hosts[i]
-		if h.Disabled && h.Group == group {
-			h.Disabled = false
-			restored++
-		}
-	}
-
-	state, err := a.readGroupState()
-	if err != nil {
-		return err
-	}
-	wasTracked := state[group]
-	delete(state, group)
-
-	if restored == 0 && !wasTracked {
-		return fmt.Errorf("group %q is not disabled", group)
-	}
-	if restored > 0 {
-		if err := a.save(cfg); err != nil {
-			return err
-		}
-	}
-	return writeGroupState(a.groupStatePath(), state)
+	return a.enableGroupManaged(v, group)
 }
 
 // IsGroupDisabled reports whether a group currently counts as disabled:
@@ -333,16 +226,10 @@ func isHostGated(h domain.Host, state map[string]bool) bool {
 	return !h.IsWildcard() && (h.Disabled || state[h.Group])
 }
 
-// ensureNotDisabled returns an error if the named host's group is disabled
+// ensureHostNotDisabled returns an error if the named host's group is disabled
 // (commented out of the config or recorded in the state file). nil is
 // returned when the host is not in the config (ad-hoc targets are never
 // gated). An unreadable state file is an error: the gate fails closed.
-func (a *App) ensureNotDisabled(cfg *config.ConfigFile, name string) error {
-	return a.ensureHostNotDisabled(cfg.Hosts, name)
-}
-
-// ensureHostNotDisabled is ensureNotDisabled over a host list, so read paths
-// can gate against the merged (Include-following) view.
 func (a *App) ensureHostNotDisabled(hosts []domain.Host, name string) error {
 	idx := findHostIndex(hosts, name)
 	if idx == -1 {

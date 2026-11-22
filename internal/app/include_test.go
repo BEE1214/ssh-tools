@@ -26,6 +26,8 @@ type incEnv struct {
 	incDir   string // holds the included file
 	mainPath string
 	incPath  string
+	// managedPath is the managed file of a set-up env, "" for a plain one.
+	managedPath string
 }
 
 const incFixture = `Host inc-a
@@ -61,6 +63,31 @@ func newIncEnvWith(t *testing.T, incBody, mainExtra string) incEnv {
 	return incEnv{a: NewAppWithPath(mainPath), dir: dir, incDir: incDir, mainPath: mainPath, incPath: incPath}
 }
 
+// newSetUpIncEnv is newIncEnv for a set-up config: the main file holds the
+// Include of the managed file and of the included file, and the standard
+// "main" hosts (main-1, deploy-main) are in the managed file.
+func newSetUpIncEnv(t *testing.T) incEnv {
+	t.Helper()
+	return newSetUpIncEnvWith(t, incFixture, "")
+}
+
+// newSetUpIncEnvWith writes the included file with incBody and a set-up
+// config whose managed file holds the standard hosts plus managedExtra.
+func newSetUpIncEnvWith(t *testing.T, incBody, managedExtra string) incEnv {
+	t.Helper()
+	e := newIncEnvWith(t, incBody, "")
+	managed := e.a.ManagedPath()
+	if err := os.Mkdir(filepath.Dir(managed), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTemp(t, managed, mgManagedHeader+"\n"+
+		"Host main-1\n  HostName 10.0.0.1\n  User m\n  IdentityFile /example/id_main\n\n"+
+		"Host deploy-main\n  HostName 10.0.0.2\n  User deploy\n"+managedExtra)
+	writeTemp(t, e.mainPath, "Include "+managed+"\nInclude "+e.incPath+"\n")
+	e.managedPath = managed
+	return e
+}
+
 func writeTemp(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -73,35 +100,51 @@ type fileState struct {
 	modTime time.Time
 }
 
-// snapshotDirs records bytes and mtime of every file in dirs, so a rejected
-// write is detected whether it changed content, touched a file, or created a
-// new one (backup, temp file, sidecar).
+// snapshotDirs records bytes and mtime of every file in dirs (and their
+// subdirectories, such as config.d), so a rejected write is detected whether it
+// changed content, touched a file, or created a new one (backup, temp file,
+// sidecar, lock).
 func snapshotDirs(t *testing.T, dirs ...string) map[string]fileState {
 	t.Helper()
 	out := map[string]fileState{}
 	for _, d := range dirs {
-		entries, err := os.ReadDir(d)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, e := range entries {
-			p := filepath.Join(d, e.Name())
+		err := filepath.WalkDir(d, func(p string, de os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if de.IsDir() {
+				return nil
+			}
 			fi, err := os.Stat(p)
 			if err != nil {
-				t.Fatal(err)
+				return err
 			}
 			data, err := os.ReadFile(p)
 			if err != nil {
-				t.Fatal(err)
+				return err
 			}
 			out[p] = fileState{data: string(data), modTime: fi.ModTime()}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
 	}
 	return out
 }
 
+// wantIncludedErr is the refusal of a write to a host of the included file.
+func (e incEnv) readMainFile(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(e.mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
 func (e incEnv) wantIncludedErr(name string) string {
-	return fmt.Sprintf("host %q is defined in %s (included), which sshm cannot edit yet", name, e.incPath)
+	return fmt.Sprintf("host %q is defined in %s (included), which sshm does not manage", name, e.incPath)
 }
 
 func hasHost(hosts []domain.Host, name string) bool {
@@ -291,19 +334,6 @@ func TestConnectAndCopyGateIncludedHosts(t *testing.T) {
 	}
 }
 
-func TestSignCertFindsIncludedHost(t *testing.T) {
-	noExecPath(t)
-	e := newIncEnv(t)
-	ca := filepath.Join(e.dir, "ca")
-	writeTemp(t, ca, "placeholder\n")
-	// inc-a's IdentityFile (/example/id_inc_a) has no .pub: the error proves
-	// the host was found in the included file and its IdentityFile used.
-	_, err := e.a.SignCert(SignOpts{HostName: "inc-a", CAKey: ca})
-	if err == nil || !strings.Contains(err.Error(), "/example/id_inc_a.pub") {
-		t.Errorf("SignCert(inc-a) = %v", err)
-	}
-}
-
 // Relative Include paths resolve against the passwd home's .ssh, which every
 // test in this package overrides (TestMain).
 func TestRelativeIncludeUsesOverriddenHome(t *testing.T) {
@@ -324,30 +354,36 @@ func TestRelativeIncludeUsesOverriddenHome(t *testing.T) {
 func TestWritesRejectIncludedOnlyHosts(t *testing.T) {
 	noExecPath(t)
 	fwd := []string{"8080:localhost:80"}
+	const exists = `host "inc-a" already exists` // a new name taken by the included file
 	ops := []struct {
 		name string
 		host string // the included host the error must name
+		want string // overrides the error text
 		run  func(a *App) error
 	}{
-		{"EditHost", "inc-a", func(a *App) error { return a.EditHost("inc-a", map[string]string{"user": "x"}) }},
-		{"DeleteHost", "inc-a", func(a *App) error { return a.DeleteHost("inc-a") }},
-		{"DuplicateHost source", "inc-a", func(a *App) error { return a.DuplicateHost("inc-a", "inc-copy") }},
-		{"DuplicateHost new name", "inc-a", func(a *App) error { return a.DuplicateHost("main-1", "inc-a") }},
-		{"AddHost existing name", "inc-a", func(a *App) error { return a.AddHost(domain.Host{Name: "inc-a", HostName: "10.9.9.9"}) }},
-		{"AddForward", "inc-a", func(a *App) error { return a.AddForward("inc-a", domain.ForwardLocal, fwd) }},
-		{"ClearForwards", "inc-a", func(a *App) error { return a.ClearForwards("inc-a") }},
-		{"RunForward --save", "inc-a", func(a *App) error { return a.RunForward("inc-a", domain.ForwardLocal, fwd, true) }},
-		{"ClearCertificateFile", "inc-a", func(a *App) error { return a.ClearCertificateFile("inc-a") }},
-		{"CheckEdit", "inc-a", func(a *App) error { _, err := a.CheckEdit("inc-a", map[string]string{"user": "x"}); return err }},
+		{"EditHost", "inc-a", "", func(a *App) error { return a.EditHost("inc-a", map[string]string{"user": "x"}) }},
+		{"DeleteHost", "inc-a", "", func(a *App) error { return a.DeleteHost("inc-a") }},
+		{"DuplicateHost source", "inc-a", "", func(a *App) error { return a.DuplicateHost("inc-a", "inc-copy") }},
+		{"DuplicateHost new name", "", exists, func(a *App) error { return a.DuplicateHost("main-1", "inc-a") }},
+		{"AddHost existing name", "", exists, func(a *App) error { return a.AddHost(domain.Host{Name: "inc-a", HostName: "10.9.9.9"}) }},
+		{"AddForward", "inc-a", "", func(a *App) error { return a.AddForward("inc-a", domain.ForwardLocal, fwd) }},
+		{"ClearForwards", "inc-a", "", func(a *App) error { return a.ClearForwards("inc-a") }},
+		{"RunForward --save", "inc-a", "", func(a *App) error { return a.RunForward("inc-a", domain.ForwardLocal, fwd, true) }},
+		{"ClearCertificateFile", "inc-a", "", func(a *App) error { return a.ClearCertificateFile("inc-a") }},
+		{"CheckEdit", "inc-a", "", func(a *App) error { _, err := a.CheckEdit("inc-a", map[string]string{"user": "x"}); return err }},
 	}
 	for _, op := range ops {
 		t.Run(op.name, func(t *testing.T) {
-			e := newIncEnv(t)
+			e := newSetUpIncEnv(t)
 			before := snapshotDirs(t, e.dir, e.incDir)
 
+			want := op.want
+			if want == "" {
+				want = e.wantIncludedErr(op.host)
+			}
 			err := op.run(e.a)
-			if err == nil || err.Error() != e.wantIncludedErr(op.host) {
-				t.Fatalf("error = %v\nwant     %s", err, e.wantIncludedErr(op.host))
+			if err == nil || err.Error() != want {
+				t.Fatalf("error = %v\nwant     %s", err, want)
 			}
 			// Byte-stability: neither file changed, was touched, and no backup,
 			// temp or sidecar file appeared next to either.
@@ -360,15 +396,16 @@ func TestWritesRejectIncludedOnlyHosts(t *testing.T) {
 
 // Unknown hosts keep their old "not found" behavior (no included file owns them).
 func TestWriteGuardLeavesUnknownHostsAlone(t *testing.T) {
-	e := newIncEnv(t)
+	e := newSetUpIncEnv(t)
 	if err := e.a.EditHost("nope", map[string]string{"user": "x"}); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("EditHost(nope) = %v", err)
 	}
 }
 
-func TestMainFileHostsStayEditableAndKeepInclude(t *testing.T) {
-	e := newIncEnv(t)
+func TestManagedHostsStayEditableAndKeepIncludes(t *testing.T) {
+	e := newSetUpIncEnv(t)
 	incBefore := snapshotDirs(t, e.incDir)
+	mainBefore := e.readMainFile(t)
 
 	if err := e.a.EditHost("main-1", map[string]string{"user": "changed"}); err != nil {
 		t.Fatal(err)
@@ -386,15 +423,16 @@ func TestMainFileHostsStayEditableAndKeepInclude(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(e.mainPath)
+	// The main file (and its Include lines) is never rewritten by a host write.
+	if got := e.readMainFile(t); got != mainBefore || !strings.Contains(got, "Include "+e.incPath+"\n") {
+		t.Errorf("the main file changed:\n%s", got)
+	}
+	data, err := os.ReadFile(e.managedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "Include "+e.incPath+"\n") {
-		t.Errorf("Include line lost from the main file:\n%s", data)
-	}
 	if strings.Contains(string(data), "inc-a") {
-		t.Errorf("included host was flattened into the main file:\n%s", data)
+		t.Errorf("included host was flattened into the managed file:\n%s", data)
 	}
 	if after := snapshotDirs(t, e.incDir); !reflect.DeepEqual(incBefore, after) {
 		t.Errorf("included file changed by writes to main-file hosts")
@@ -409,9 +447,10 @@ func TestMainFileHostsStayEditableAndKeepInclude(t *testing.T) {
 	}
 }
 
-// A name defined in both files is editable: the write targets the main block.
+// A name defined in the managed and in an included file is editable: the write
+// targets the managed block.
 func TestHostInBothFilesIsEditable(t *testing.T) {
-	e := newIncEnvWith(t, incFixture+"\nHost main-1\n  HostName 10.0.5.5\n", "")
+	e := newSetUpIncEnvWith(t, incFixture+"\nHost main-1\n  HostName 10.0.5.5\n", "")
 	incBefore := snapshotDirs(t, e.incDir)
 	if err := e.a.EditHost("main-1", map[string]string{"user": "changed"}); err != nil {
 		t.Fatal(err)
@@ -419,52 +458,45 @@ func TestHostInBothFilesIsEditable(t *testing.T) {
 	if after := snapshotDirs(t, e.incDir); !reflect.DeepEqual(incBefore, after) {
 		t.Errorf("included file changed")
 	}
-	if data, _ := os.ReadFile(e.mainPath); !strings.Contains(string(data), "User changed") {
-		t.Errorf("main file not edited:\n%s", data)
+	if data, _ := os.ReadFile(e.managedPath); !strings.Contains(string(data), "User changed") {
+		t.Errorf("managed file not edited:\n%s", data)
 	}
 }
 
-func TestGroupDisableEnableRefuseWithIncludedMembers(t *testing.T) {
-	e := newIncEnv(t)
+// A group with a member in an included file is refused by DisableGroup, and
+// nothing is written.
+func TestGroupDisableRefusesWithIncludedMembers(t *testing.T) {
+	e := newSetUpIncEnv(t)
 	before := snapshotDirs(t, e.dir, e.incDir)
 
 	err := e.a.DisableGroup("deploy")
 	if err == nil {
 		t.Fatal("DisableGroup(deploy) succeeded although deploy-inc is in an included file")
 	}
-	wantMsg := fmt.Sprintf(`cannot disable group "deploy": host "deploy-inc" is defined in %s (included), which sshm cannot edit yet`, e.incPath)
+	wantMsg := fmt.Sprintf("cannot disable group \"deploy\": every member must be defined in the managed file\n  host \"deploy-inc\" is defined in %s (included), which sshm does not manage", e.incPath)
 	if err.Error() != wantMsg {
 		t.Errorf("error = %q\nwant    %q", err, wantMsg)
 	}
 	if after := snapshotDirs(t, e.dir, e.incDir); !reflect.DeepEqual(before, after) {
 		t.Errorf("files changed after refused DisableGroup (incl. sidecar):\nbefore %v\nafter  %v", before, after)
 	}
-
-	// EnableGroup refuses the same way, even with a recorded sidecar state.
-	if err := writeGroupState(e.a.groupStatePath(), map[string]bool{"deploy": true}); err != nil {
-		t.Fatal(err)
-	}
-	before = snapshotDirs(t, e.dir, e.incDir)
-	err = e.a.EnableGroup("deploy")
-	if err == nil || !strings.Contains(err.Error(), `cannot enable group "deploy"`) || !strings.Contains(err.Error(), e.incPath) {
-		t.Errorf("EnableGroup error = %v", err)
-	}
-	if after := snapshotDirs(t, e.dir, e.incDir); !reflect.DeepEqual(before, after) {
-		t.Errorf("files changed after refused EnableGroup")
-	}
 }
 
-// A group that lives entirely in the main file still disables and enables,
-// and the Include line survives the rewrite.
-func TestGroupDisableStillWorksForMainOnlyGroup(t *testing.T) {
-	e := newIncEnv(t)
+// A group that lives entirely in the managed file still disables and enables,
+// and the main file with its Include lines is not touched.
+func TestGroupDisableStillWorksForManagedOnlyGroup(t *testing.T) {
+	e := newSetUpIncEnv(t)
 	incBefore := snapshotDirs(t, e.incDir)
+	mainBefore := e.readMainFile(t)
 	if err := e.a.DisableGroup("main"); err != nil {
 		t.Fatal(err)
 	}
-	data, _ := os.ReadFile(e.mainPath)
-	if !strings.Contains(string(data), domain.DisabledMarkerStart("main")) || !strings.Contains(string(data), "Include "+e.incPath) {
-		t.Errorf("unexpected main file after disable:\n%s", data)
+	data, _ := os.ReadFile(e.managedPath)
+	if !strings.Contains(string(data), domain.DisabledMarkerStart("main")) {
+		t.Errorf("unexpected managed file after disable:\n%s", data)
+	}
+	if got := e.readMainFile(t); got != mainBefore {
+		t.Errorf("the main file changed:\n%s", got)
 	}
 	if err := e.a.EnableGroup("main"); err != nil {
 		t.Fatal(err)

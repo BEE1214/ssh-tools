@@ -17,13 +17,14 @@ const (
 
 // Host represents a single Host block in an SSH config file.
 type Host struct {
-	// Name is the argument text of the Host line exactly as written in the
-	// file (usually a plain host name; can be a wildcard like "*", a pattern
-	// list, or text with quotes or an inline comment). The legacy writer puts
-	// it back unchanged, so it is never normalized.
+	// Name is the name a user types for the block. For a parsed Host line with
+	// one pattern it is that pattern (`Host web-1 # prod` is web-1); with
+	// several patterns the patterns joined by one space (`Host db-1 db-2` is
+	// "db-1 db-2"); a line without any pattern keeps its argument text. It can
+	// be a wildcard like "*".
 	Name string
 
-	// Patterns are the patterns of the Host line as ssh reads Name: split
+	// Patterns are the patterns of the Host line as ssh reads it: split
 	// into words with quotes removed and a trailing "# comment" dropped
 	// (`"a b"` is ONE pattern, `x # note` is just x). The parser fills it;
 	// it is non-nil (possibly empty: "Host # note" matches nothing) for every
@@ -86,12 +87,6 @@ type Host struct {
 	// hosts are invisible to raw ssh (unresolvable) and rejected by
 	// sshm connect/copy; enable restores the original block bytes.
 	Disabled bool
-
-	// RawBlock is the verbatim source text of this host block (Host line
-	// through the last option/comment line, without trailing newline).
-	// Populated by the parser; the writer re-emits it verbatim for disabled
-	// blocks so enable can restore the original formatting byte-for-byte.
-	RawBlock string
 
 	// Source indicates how this block was created.
 	Source HostSource

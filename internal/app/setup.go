@@ -16,8 +16,9 @@ import (
 // implemented (PLAN-p3-p4.md).
 var ErrNotImplemented = errors.New("not implemented")
 
-// ErrNotSetUp: a command that needs managed mode ran in legacy mode (R-section
-// fixed error strings, I1).
+// ErrNotSetUp: a command that writes an ssh config ran on a config whose main
+// file has no unconditional Include of the managed file (P7 G1), or whose main
+// file does not exist (G4).
 var ErrNotSetUp = errors.New("sshm is not set up: run 'sshm setup' first")
 
 // UnmanagedHostError: a write command targeted a host that is not defined in
@@ -40,36 +41,26 @@ func (e *UnmanagedHostError) Error() string {
 // several patterns of a Host line (P7 M1), or by the whole line text (M2). Host
 // is the Name of the block, i.e. the line's argument text with comment and
 // quotes stripped ("db-1 db-2"); File and Line say where the line is.
-//
-// SKELETON (P7): the message is a placeholder until the implementation round.
 type MultiPatternError struct {
 	Host string
 	File string
 	Line int
 }
 
-func (e *MultiPatternError) Error() string { return ErrNotImplemented.Error() }
+func (e *MultiPatternError) Error() string {
+	return fmt.Sprintf("%q in %s has several patterns, which sshm cannot edit", "Host "+e.Host, e.File)
+}
 
 // ManagedPath returns the path of the managed file: <dir of main>/config.d/sshm.conf.
 func (a *App) ManagedPath() string { return managedPathFor(a.configPath) }
 
 // ManagedActive reports whether sshm runs in managed mode: the managed file's
 // path is among the files config.Load reached through an UNCONDITIONAL
-// Include (PLAN-p3-p4.md section 1). Otherwise it is legacy mode, in which
-// every command behaves as before (R1).
+// Include (PLAN-p3-p4.md section 1), i.e. the config is set up and the write
+// commands work. Otherwise the write commands return ErrNotSetUp.
 func (a *App) ManagedActive() (bool, error) {
 	v, err := a.activeView()
 	return v != nil, err
-}
-
-// SetupHint returns the legacy-mode hint line
-// `hint: run 'sshm setup' to keep sshm-managed hosts in <managed path>`, or ""
-// in managed mode (R14).
-func (a *App) SetupHint() string {
-	if active, err := a.ManagedActive(); err == nil && active {
-		return ""
-	}
-	return "hint: run 'sshm setup' to keep sshm-managed hosts in " + a.ManagedPath()
 }
 
 // InitFresh is the fresh-machine entry of 'sshm init' (P7 I1-I4): when the main
@@ -80,11 +71,21 @@ func (a *App) SetupHint() string {
 // caller then goes on with InitDefaultsReport (which returns ErrNotSetUp for a
 // config that is not set up, G1). A failure leaves the previous state or a
 // complete set-up state (I4).
-//
-// SKELETON (P7): returns ErrNotImplemented. The CLI 'init' does not call it
-// yet.
 func (a *App) InitFresh() (res SetupResult, fresh bool, err error) {
-	return SetupResult{}, false, ErrNotImplemented
+	target, err := config.WriteTarget(a.configPath)
+	if err != nil {
+		return SetupResult{}, false, err
+	}
+	if _, exists, err := readState(target); err != nil {
+		return SetupResult{}, false, fmt.Errorf("read %s: %w", a.configPath, err)
+	} else if exists {
+		return SetupResult{}, false, nil
+	}
+	res, err = a.Setup(SetupOptions{})
+	if err != nil {
+		return SetupResult{}, false, err
+	}
+	return res, true, nil
 }
 
 // SetupOptions are the options of Setup.
@@ -318,7 +319,7 @@ func (a *App) Setup(opts SetupOptions) (SetupResult, error) {
 			return SetupResult{}, fmt.Errorf("not setting up: %w", err)
 		}
 		if before, err = a.resolveAll(names); err != nil {
-			return SetupResult{}, fmt.Errorf("not setting up: the current ssh configuration is already broken: %w", err)
+			return SetupResult{}, fmt.Errorf("not setting up: the current ssh configuration is already broken: %w%s", err, a.backupHint(main))
 		}
 	}
 
@@ -333,16 +334,27 @@ func (a *App) Setup(opts SetupOptions) (SetupResult, error) {
 func (a *App) applySetup(plan setupPlan, raw []byte, mainExists bool, mainTarget string, verify bool, names []string, before map[string]string) (err error) {
 	main, managed := a.configPath, a.ManagedPath()
 
+	// From the first write to the end of the verification a signal undoes the
+	// setup like a failed verification (interrupt.go). Registered first, so the
+	// handler is still installed while the undo list runs.
+	w := a.openInterruptWindow()
+	defer func() { a.closeInterruptWindow(w, err) }()
+
 	// Undo list, run in reverse on failure.
 	var undo []func() error
 	defer func() {
 		if err == nil {
 			return
 		}
+		var rerr error
 		for i := len(undo) - 1; i >= 0; i-- {
 			if uerr := undo[i](); uerr != nil {
 				err = fmt.Errorf("%w (AND the rollback failed: %v)", err, uerr)
+				rerr = errors.Join(rerr, uerr)
 			}
+		}
+		if w.fired() {
+			err = a.interrupted(w, main, rerr)
 		}
 	}()
 
@@ -417,6 +429,10 @@ func (a *App) applySetup(plan setupPlan, raw []byte, mainExists bool, mainTarget
 		undo = append(undo, func() error { return restoreFile(kindMain, main, data, raw, mainExists, 0) })
 	}
 
+	if w.fired() {
+		return ErrInterrupted
+	}
+
 	// The result must be what ssh sees: managed file reached unconditionally.
 	l2, err := a.loadAll()
 	if err == nil {
@@ -429,6 +445,9 @@ func (a *App) applySetup(plan setupPlan, raw []byte, mainExists bool, mainTarget
 		return fmt.Errorf("setup undone: %w", err)
 	}
 	if !verify {
+		if w.fired() {
+			return ErrInterrupted
+		}
 		return nil
 	}
 	if before == nil {
@@ -439,6 +458,9 @@ func (a *App) applySetup(plan setupPlan, raw []byte, mainExists bool, mainTarget
 		if after, err = a.resolveAll(names); err == nil {
 			err = comparePlan(before, after, nil, verifyPlan{})
 		}
+	}
+	if err == nil && w.fired() {
+		err = ErrInterrupted
 	}
 	if err != nil {
 		return fmt.Errorf("setup undone, files restored: %w", err)

@@ -382,7 +382,7 @@ func (a *App) saveDocLocked(kind docKind, path string, d *config.Doc, v verifyPl
 			}
 		}
 		if err != nil {
-			return fail(fmt.Errorf("not writing %s: the current ssh configuration is already broken: %w", path, err))
+			return fail(fmt.Errorf("not writing %s: the current ssh configuration is already broken: %w%s", path, err, a.backupHint(path)))
 		}
 		// What ssh itself derives from the expected values, on the
 		// configuration as it is now.
@@ -412,17 +412,23 @@ func (a *App) saveDocLocked(kind docKind, path string, d *config.Doc, v verifyPl
 		}
 	}
 
-	// 5. Write.
+	// 5. Write. From here to the end of the verification a signal rolls the
+	// write back (interrupt.go); before it the default behavior stays.
 	if err := unchanged(); err != nil {
 		return fail(err)
 	}
+	w := a.openInterruptWindow()
+	defer func() { a.closeInterruptWindow(w, err) }()
 	if err := writeDoc(kind, path, data, 0o600); err != nil {
 		return fail(fmt.Errorf("write %s: %w", path, err))
 	}
 
 	// 7. (defined here, used below) Restore the content, then look at ssh
-	// once more so the error says what state the user is left in.
+	// once more so the error says what state the user is left in. After a
+	// signal the result is an *InterruptedError instead, and ssh (whose calls
+	// are cancelled) is not asked again.
 	rollback := func(cause error) error {
+		intr := w.fired()
 		// Undo only what this save wrote. If the file is not that any more,
 		// somebody else changed it during verification, and writing the old
 		// content over it would destroy their edit. (Same residual window
@@ -433,6 +439,9 @@ func (a *App) saveDocLocked(kind docKind, path string, d *config.Doc, v verifyPl
 			was := "there was no file before this save"
 			if existed {
 				was = "the content from before this save is in the backup " + bakPath
+			}
+			if intr {
+				return a.interrupted(w, path, fmt.Errorf("%s was changed by someone else meanwhile, so it was not restored: %w", path, ErrNotRolledBack))
 			}
 			return fmt.Errorf("change to %s failed (%v) and %s was left as it is now: %w; %s",
 				path, cause, path, ErrNotRolledBack, was)
@@ -450,6 +459,9 @@ func (a *App) saveDocLocked(kind docKind, path string, d *config.Doc, v verifyPl
 		} else if rerr = os.Remove(target); os.IsNotExist(rerr) {
 			rerr = nil
 		}
+		if intr {
+			return a.interrupted(w, path, rerr)
+		}
 		if rerr != nil {
 			return fmt.Errorf("change to %s failed (%v) AND the rollback failed: %v; backup: %s",
 				path, cause, rerr, bakPath)
@@ -459,6 +471,12 @@ func (a *App) saveDocLocked(kind docKind, path string, d *config.Doc, v verifyPl
 			state = "; " + a.sshStateAfterRestore(names, before)
 		}
 		return fmt.Errorf("change to %s rolled back, file restored%s%s: %w", path, kept, state, cause)
+	}
+
+	// A signal that arrived during the write rolls it back, too (the ssh calls
+	// below would fail on their own, a skipped verification would not).
+	if w.fired() {
+		return "", rollback(ErrInterrupted)
 	}
 
 	// 2 again, on what is on disk now: the new content may bring Includes of
@@ -481,6 +499,9 @@ func (a *App) saveDocLocked(kind docKind, path string, d *config.Doc, v verifyPl
 		}
 	}
 	if skip != "" {
+		if w.fired() {
+			return "", rollback(ErrInterrupted)
+		}
 		return joinNotes(note, "verification skipped: "+skip), nil
 	}
 
@@ -492,6 +513,9 @@ func (a *App) saveDocLocked(kind docKind, path string, d *config.Doc, v verifyPl
 	}
 	if verr == nil {
 		verr = comparePlan(before, after, pred, v)
+	}
+	if verr == nil && w.fired() {
+		verr = ErrInterrupted
 	}
 	if verr != nil {
 		return "", rollback(verr)
@@ -708,7 +732,7 @@ var sshRun = func(ctx context.Context, args ...string) (stdout, stderr []byte, e
 // host. ssh reads such an argument exactly like the config line "Key value"
 // and BEFORE any file, so it takes precedence over the whole configuration.
 func (a *App) sshG(name string, opts ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), sshTimeout)
+	ctx, cancel := a.sshContext()
 	defer cancel()
 	args := []string{"-F", a.configPath, "-G"}
 	for _, o := range opts {

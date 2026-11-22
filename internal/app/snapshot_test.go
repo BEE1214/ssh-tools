@@ -7,7 +7,7 @@ import (
 )
 
 func TestSnapshotMarksGatedHosts(t *testing.T) {
-	a := newTestApp(t, groupFixture)
+	a := newSetUpTestApp(t, groupFixture)
 	if err := a.DisableGroup("deploy"); err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestCheckHostName(t *testing.T) {
 }
 
 func TestCheckNewHostAndEditDoNotWrite(t *testing.T) {
-	a := newTestApp(t, groupFixture)
+	a := newSetUpTestApp(t, groupFixture)
 	before := configAfter(t, a)
 
 	issues, err := a.CheckNewHost(domain.Host{Name: "web-1"})
@@ -98,7 +98,7 @@ func TestCheckNewHostAndEditDoNotWrite(t *testing.T) {
 }
 
 func TestCheckEditRefusesDisabledHost(t *testing.T) {
-	a := newTestApp(t, groupFixture)
+	a := newSetUpTestApp(t, groupFixture)
 	if err := a.DisableGroup("deploy"); err != nil {
 		t.Fatal(err)
 	}

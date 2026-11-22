@@ -89,35 +89,6 @@ func writeFixture(t *testing.T, path, body string) {
 
 var localForward8000 = regexp.MustCompile(`(?m)^\s*LocalForward\s+8000\s+localhost:80\s*$`)
 
-func TestImplR14_ForwardSave_LegacyModePrintsTheHintOnceBeforeTheExec(t *testing.T) {
-	t.Parallel()
-	realSSH, err := exec.LookPath("ssh")
-	if err != nil {
-		t.Skip("ssh not in PATH")
-	}
-	dir := t.TempDir()
-	mainPath := filepath.Join(dir, "config")
-	writeFixture(t, mainPath, "Host web-1\n  HostName 10.0.0.1\n")
-
-	r := runForwardSave(t, realSSH, mainPath, "web-1")
-	if r.err != nil {
-		t.Fatalf("helper failed: %v\nstdout: %s\nstderr: %s", r.err, r.stdout, r.stderr)
-	}
-	const hint = "hint: run 'sshm setup'"
-	if n := strings.Count(r.stderr, hint); n != 1 {
-		t.Errorf("stderr has the hint %d times, want exactly once:\n%s", n, r.stderr)
-	}
-	if want := "hint: run 'sshm setup' to keep sshm-managed hosts in " + filepath.Join(dir, "config.d", "sshm.conf"); !strings.Contains(r.stderr, want) {
-		t.Errorf("stderr lacks %q:\n%s", want, r.stderr)
-	}
-	if !strings.Contains(r.stdout, fakeSSHMarker+" -N -L 8000:localhost:80 web-1") {
-		t.Errorf("the fake ssh was not exec'd after the hint; stdout:\n%s\nstderr:\n%s", r.stdout, r.stderr)
-	}
-	if got := cliRead(t, mainPath); !localForward8000.MatchString(got) {
-		t.Errorf("the forward was not saved to the main file:\n%s", got)
-	}
-}
-
 func TestImplR14_ForwardSave_ManagedModePrintsNoHintAndSavesToTheManagedFile(t *testing.T) {
 	t.Parallel()
 	realSSH, err := exec.LookPath("ssh")

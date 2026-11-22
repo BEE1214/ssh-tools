@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -483,296 +482,11 @@ func loadedHostNames(l *Loaded) []string {
 
 // ---- Item 5a: the legacy Write(Parse()) keeps what ssh resolves ----
 
-// legacyLossy says why the legacy writer is KNOWN to change what ssh makes of
-// text, or "" when Write(Parse(text)) must be equivalent for ssh. Both cases
-// are as old as the legacy writer (they are why the managed file is edited
-// through Doc instead) and are not fixed here:
-//
-//   - the parser ends a host block at a blank line, ssh does not. An option
-//     line below a blank line is kept as loose text, and Write emits all loose
-//     text at the TOP of the file, where the option applies to every host;
-//   - the parser has no Match blocks: outside a host block a Match line and
-//     its options are loose text (moved to the top, in front of every Host
-//     block), inside one "Match" is stored like an option of that host;
-//   - "ForwardAgent no" followed, in the same block, by "ForwardAgent <path>":
-//     ssh keeps forwarding off but remembers (and prints) the path. One line
-//     cannot say both; the writer keeps "no", the behaviour, so `ssh -G`
-//     prints another line (TestForwardAgentRepeatFollowsSSH).
-func legacyLossy(text string) string {
-	cfg, err := Parse([]byte(text))
-	if err != nil {
-		return "the parser refuses it"
-	}
-	agentOff := false
-	for _, l := range strings.Split(text, "\n") {
-		t := strings.TrimSpace(l)
-		_, isHost, isMatch := blockLine(t)
-		if isMatch {
-			return "it has a Match line"
-		}
-		if isHost {
-			agentOff = false
-		}
-		if key, value, ok := splitKeyword(t); ok && strings.EqualFold(key, "ForwardAgent") {
-			isFlag, on := agentFlag(value)
-			if agentOff && !isFlag {
-				return "ForwardAgent no is followed by ForwardAgent <path>"
-			}
-			agentOff = agentOff || (isFlag && !on)
-		}
-	}
-	firstHost := 0
-	for _, h := range cfg.Hosts {
-		if !h.Disabled && h.LineStart > 0 && (firstHost == 0 || h.LineStart < firstHost) {
-			firstHost = h.LineStart
-		}
-	}
-	if firstHost == 0 {
-		return ""
-	}
-	for _, c := range cfg.Comments {
-		if c.LineStart < firstHost {
-			continue
-		}
-		for _, l := range strings.Split(c.Text, "\n") {
-			if t := strings.TrimSpace(l); t != "" && !strings.HasPrefix(t, "#") {
-				return fmt.Sprintf("the option line %q stands below a blank line of a host block", t)
-			}
-		}
-	}
-	return ""
-}
-
-// legacySentinel is a host name no document defines.
-const legacySentinel = "sshm-legacy-sentinel.invalid"
-
-// legacyProbeNames lists the names to resolve for text, found without the
-// parser under test: every pattern of every Host line (enabled or inside a
-// disabled region) made concrete ("*" becomes "x", "?" becomes "y", a
-// negation loses its "!"), plus a name nothing defines.
-func legacyProbeNames(text string) []string {
-	set := map[string]bool{legacySentinel: true}
-	enabled, disabledLines := inputHostArgs(text)
-	for _, l := range disabledLines {
-		l = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(l), "# "))
-		arg := strings.TrimLeft(l[4:], " \t")
-		enabled = append(enabled, strings.TrimLeft(strings.TrimPrefix(arg, "="), " \t"))
-	}
-	for _, arg := range enabled {
-		for _, w := range SplitWords(arg) {
-			w = strings.NewReplacer("*", "x", "?", "y").Replace(strings.TrimPrefix(w, "!"))
-			if w != "" && w[0] != '-' && !strings.ContainsAny(w, " \t@/'`\"$\\;&<>|(){},#") {
-				set[w] = true
-			}
-		}
-	}
-	return sortedNames(set)
-}
-
-// legacySSH compares, with the real ssh, what every probe name resolves to
-// before and after the legacy Write(Parse()). Documents ssh rejects and
-// documents of the known-lossy class (legacyLossy) are counted, not compared.
-type legacySSH struct {
-	dir                    string // "" when ssh is not installed: nothing is checked
-	files                  int
-	checked, lossy, refuse int
-}
-
-func newLegacySSH(t *testing.T) *legacySSH {
-	t.Helper()
-	c := &legacySSH{}
-	if _, err := exec.LookPath("ssh"); err == nil {
-		c.dir = t.TempDir()
-	}
-	return c
-}
-
-func (c *legacySSH) check(text string) error {
-	if c.dir == "" {
-		return nil
-	}
-	if legacyLossy(text) != "" {
-		c.lossy++
-		return nil
-	}
-	c.files++
-	before := filepath.Join(c.dir, fmt.Sprintf("before-%d", c.files))
-	after := filepath.Join(c.dir, fmt.Sprintf("after-%d", c.files))
-	if err := os.WriteFile(before, []byte(text), 0o600); err != nil {
-		return err
-	}
-	names := legacyProbeNames(text)
-	// A document ssh cannot even parse fails for every name; the sentinel
-	// (to which no block applies) tells.
-	if _, ok := sshGRaw(before, legacySentinel); !ok {
-		c.refuse++
-		return nil
-	}
-	cfg, err := Parse([]byte(text))
-	if err != nil {
-		return fmt.Errorf("Parse: %v", err)
-	}
-	out, err := Write(cfg)
-	if err != nil {
-		return fmt.Errorf("Write: %v", err)
-	}
-	if err := os.WriteFile(after, out, 0o600); err != nil {
-		return err
-	}
-	// Every name against both files, in parallel (ssh -G is a process each).
-	type res struct {
-		b, a     string
-		bok, aok bool
-	}
-	results := make([]res, len(names))
-	var wg sync.WaitGroup
-	for i, n := range names {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			r := &results[i]
-			r.b, r.bok = sshGRaw(before, n)
-			r.a, r.aok = sshGRaw(after, n)
-		}()
-	}
-	wg.Wait()
-	for i, n := range names {
-		r := results[i]
-		switch {
-		case r.bok != r.aok:
-			// ssh checks some values only for the host they apply to (a
-			// HostName with characters it does not allow), so a document can
-			// resolve for one name and fail for another. Before and after
-			// must agree on that as well.
-			return fmt.Errorf("ssh -G %s works before = %v, after the legacy Write(Parse()) = %v:\n--- input\n%s--- output\n%s", n, r.bok, r.aok, text, out)
-		case r.a != r.b:
-			return fmt.Errorf("ssh -G %s differs after the legacy Write(Parse()): %s\n--- input\n%s--- output\n%s",
-				n, strings.Join(firstDiffLines(r.b, r.a), "; "), text, out)
-		}
-	}
-	c.checked++
-	return nil
-}
-
-// firstDiffLines names up to four lines that are in only one of two ssh -G
-// outputs.
-func firstDiffLines(before, after string) []string {
-	in := func(s string) map[string]bool {
-		m := map[string]bool{}
-		for _, l := range strings.Split(s, "\n") {
-			m[l] = true
-		}
-		return m
-	}
-	b, a := in(before), in(after)
-	var out []string
-	for _, l := range sortedNames(b) {
-		if !a[l] {
-			out = append(out, "- "+l)
-		}
-	}
-	for _, l := range sortedNames(a) {
-		if !b[l] {
-			out = append(out, "+ "+l)
-		}
-	}
-	if len(out) > 4 {
-		out = out[:4]
-	}
-	return out
-}
-
-// The helper sees a writer that loses or moves an option, and it does not
-// compare what it must not: the lossy class and documents ssh rejects.
-func TestLegacySSHHelper(t *testing.T) {
-	needSSH(t)
-	c := newLegacySSH(t)
-	for _, text := range []string{
-		"Host a\n  User alice\n  Port 2222\n  IdentityFile /keys/a\n  IdentityFile /keys/b\n\nHost b c-*\n  HostName 10.0.0.2\n\nHost *\n  User fallback\n",
-		"ServerAliveInterval 20\n# note\nHost a # the a box\n\tuser=alice\n  HOSTNAME = 10.0.0.1\n  SendEnv A\n  SendEnv B\n",
-		"Host a\n  User alice\n" + "# sshm disabled group=g start\n# Host off\n#   User nobody\n# sshm disabled group=g end\n  Port 2200\n",
-	} {
-		if err := c.check(text); err != nil {
-			t.Errorf("%v", err)
-		}
-	}
-	if c.checked != 3 {
-		t.Fatalf("checked %d of 3 documents (lossy %d, refused %d)", c.checked, c.lossy, c.refuse)
-	}
-	// Known-lossy documents are set aside, with ssh confirming that the
-	// legacy writer really changes them (if this stops being true, the
-	// writer was fixed: narrow legacyLossy).
-	for _, text := range []string{
-		"Host a\n  User alice\n\n  Port 2222\n\nHost b\n  User bob\n",
-		"Host a\n  User alice\n\nMatch all\n  User everyone\n\nHost b\n  User bob\n",
-	} {
-		if legacyLossy(text) == "" {
-			t.Errorf("not recognised as lossy:\n%s", text)
-			continue
-		}
-		cfg, err := Parse([]byte(text))
-		if err != nil {
-			t.Fatal(err)
-		}
-		out, err := Write(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
-		before := write(t, filepath.Join(c.dir, "lossy-before"), text)
-		after := write(t, filepath.Join(c.dir, "lossy-after"), string(out))
-		changed := false
-		for _, n := range legacyProbeNames(text) {
-			b, bok := sshGRaw(before, n)
-			a, aok := sshGRaw(after, n)
-			if !bok || !aok {
-				t.Fatalf("ssh refuses the fixture (ok %v/%v):\n%s", bok, aok, text)
-			}
-			changed = changed || a != b
-		}
-		if !changed {
-			t.Errorf("the legacy writer no longer changes what ssh resolves; legacyLossy is too wide:\n%s", text)
-		}
-	}
-	if c.lossy != 0 {
-		t.Errorf("lossy counter = %d before any lossy check", c.lossy)
-	}
-	if err := c.check("Host a\n  User alice\n\n  Port 2222\n"); err != nil || c.lossy != 1 {
-		t.Errorf("a lossy document: err=%v lossy=%d", err, c.lossy)
-	}
-	if err := c.check("Host a\n  Port not-a-port\n"); err != nil || c.refuse != 1 {
-		t.Errorf("a document ssh rejects: err=%v refused=%d", err, c.refuse)
-	}
-	// A writer that drops or moves an option is what the check is for: the
-	// same comparison on a tampered output must fail.
-	text := "Host a\n  User alice\n  Port 2222\n\nHost *\n  User fallback\n"
-	before := write(t, filepath.Join(c.dir, "t-before"), text)
-	for _, tampered := range []string{
-		"Host a\n  Port 2222\n\nHost *\n  User fallback\n",               // option dropped
-		"Port 2222\nHost a\n  User alice\n\nHost *\n  User fallback\n",   // option made global
-		"Host *\n  User fallback\n\nHost a\n  User alice\n  Port 2222\n", // blocks reordered
-	} {
-		after := write(t, filepath.Join(c.dir, "t-after"), tampered)
-		same := true
-		for _, n := range legacyProbeNames(text) {
-			b, _ := sshGRaw(before, n)
-			a, _ := sshGRaw(after, n)
-			same = same && a == b
-		}
-		if same {
-			t.Errorf("the probes do not see the difference to:\n%s", tampered)
-		}
-	}
-	if got := legacyProbeNames("Host a b-* !c ?d\n# sshm disabled group=g start\n# Host off\n# sshm disabled group=g end\n"); !reflect.DeepEqual(got,
-		[]string{"a", "b-x", "c", "off", "sshm-legacy-sentinel.invalid", "yd"}) {
-		t.Errorf("legacyProbeNames = %q", got)
-	}
-}
-
 // Repeated ForwardAgent lines in one block. For ssh the flag (yes/no) and
 // the agent socket path are two settings: the first flag-or-path line decides
 // whether forwarding is on, the first PATH line sets the path, wherever it
-// stands. The legacy parser keeps the one line that says the same (found by
-// the property test: "yes" then a path must come back as the path).
+// stands. The parser keeps the one value that says the same (found by the
+// property test: "yes" then a path must read as the path).
 func TestForwardAgentRepeatFollowsSSH(t *testing.T) {
 	for _, c := range []struct {
 		lines []string
@@ -809,13 +523,8 @@ func TestForwardAgentRepeatFollowsSSH(t *testing.T) {
 		if _, err := exec.LookPath("ssh"); err != nil {
 			continue
 		}
-		out, err := Write(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
 		dir := t.TempDir()
 		before := sshG(t, write(t, filepath.Join(dir, "before"), text), "h")["forwardagent"]
-		after := sshG(t, write(t, filepath.Join(dir, "after"), string(out)), "h")["forwardagent"]
 		wantG := c.sshG
 		if wantG == "" {
 			wantG = strings.ToLower(c.want)
@@ -825,12 +534,6 @@ func TestForwardAgentRepeatFollowsSSH(t *testing.T) {
 		}
 		if !reflect.DeepEqual(before, []string{wantG}) {
 			t.Errorf("%q: ssh resolves forwardagent %q, the test expects %q", c.lines, before, wantG)
-		}
-		if c.sshG == "" && !reflect.DeepEqual(after, before) {
-			t.Errorf("%q: forwardagent %q before and %q after the legacy Write(Parse())", c.lines, before, after)
-		}
-		if c.sshG != "" && (legacyLossy(text) == "" || !reflect.DeepEqual(after, []string{c.want})) {
-			t.Errorf("%q: after = %q, lossy = %q; want the flag kept and the document counted as lossy", c.lines, after, legacyLossy(text))
 		}
 	}
 }

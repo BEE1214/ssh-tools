@@ -69,7 +69,6 @@ func newAddCmd() *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(os.Stderr, "Added host %s\n", name)
-			printHint(a)
 			return nil
 		},
 	}

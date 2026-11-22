@@ -53,25 +53,3 @@ func TestGroupsDisableEnable_ManagedModeNamesTheManagedFile(t *testing.T) {
 		t.Errorf("enable line = %q, want %q", got, want)
 	}
 }
-
-func TestGroupsDisableEnable_LegacyModeNamesTheMainFile(t *testing.T) {
-	e := newCLIEnv(t, "Host deploy-acq\n  HostName 192.168.1.10\n\nHost deploy-eu\n  HostName 192.168.1.11\n", cliAbsent)
-
-	_, stderr, err := runCLI(t, "groups", "disable", "deploy")
-	if err != nil {
-		t.Fatalf("groups disable: %v\n%s", err, stderr)
-	}
-	want := fmt.Sprintf("group %q disabled — blocks commented out of %s", "deploy", e.main)
-	if got := cliLineStarting(t, stderr, "group "); got != want {
-		t.Errorf("disable line = %q, want %q", got, want)
-	}
-
-	_, stderr, err = runCLI(t, "groups", "enable", "deploy")
-	if err != nil {
-		t.Fatalf("groups enable: %v\n%s", err, stderr)
-	}
-	want = fmt.Sprintf("group %q enabled — blocks restored in %s", "deploy", e.main)
-	if got := cliLineStarting(t, stderr, "group "); got != want {
-		t.Errorf("enable line = %q, want %q", got, want)
-	}
-}

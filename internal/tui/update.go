@@ -88,7 +88,8 @@ func (m Model) updateList(k tea.KeyPressMsg) (Model, tea.Cmd) {
 		m.mode = modeHelp
 	case "e", "n", "d", "D":
 		if !m.managed {
-			// Legacy mode: no TUI write may reach the lossy legacy writer.
+			// Not set up: no TUI write is attempted (the app layer would
+			// refuse it with ErrNotSetUp).
 			if m.managedProblem != "" {
 				m.setToast("editing disabled: "+m.managedProblem, true)
 				return m, nil
@@ -151,7 +152,8 @@ func (m *Model) hostForChange() (row, bool) {
 	case r.readOnly():
 		m.setToast(r.host.Name+" is read-only (managed by DevPod)", true)
 	case r.reason != "":
-		// The app layer's own refusal text (managed or legacy wording).
+		// The app layer's own refusal text (managed, multi-pattern or, on a
+		// config that is not set up, the "included" wording).
 		m.setToast(r.reason, true)
 	default:
 		return r, true

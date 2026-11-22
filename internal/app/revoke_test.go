@@ -46,8 +46,9 @@ func fileExists(p string) bool {
 
 func TestRevokeCert_HostInMain(t *testing.T) {
 	cert := makeCert(t, "cert-main")
-	e := newIncEnvWith(t, incFixture,
+	e := newSetUpIncEnvWith(t, incFixture,
 		"\nHost cert-main\n  HostName 10.0.0.9\n  User cm\n  CertificateFile "+cert+"\n")
+	mainBefore := e.readMainFile(t)
 
 	if err := e.a.RevokeCert(cert); err != nil {
 		t.Fatal(err)
@@ -55,22 +56,22 @@ func TestRevokeCert_HostInMain(t *testing.T) {
 	if fileExists(cert) {
 		t.Error("cert file still present after revoke")
 	}
-	data, err := os.ReadFile(e.mainPath)
+	data, err := os.ReadFile(e.managedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(data), "CertificateFile") {
 		t.Errorf("CertificateFile line not cleared:\n%s", data)
 	}
-	if !strings.Contains(string(data), "Include "+e.incPath) {
-		t.Errorf("Include line lost:\n%s", data)
+	if got := e.readMainFile(t); got != mainBefore || !strings.Contains(got, "Include "+e.incPath) {
+		t.Errorf("the main file changed:\n%s", got)
 	}
 }
 
 func TestRevokeCert_HostOnlyInIncludedFile(t *testing.T) {
 	cert := makeCert(t, "inc-cert")
 	incBody := incFixture + "\nHost inc-cert\n  HostName 10.0.1.9\n  User ic\n  CertificateFile " + cert + "\n"
-	e := newIncEnvWith(t, incBody, "")
+	e := newSetUpIncEnvWith(t, incBody, "")
 	certDir := filepath.Dir(cert)
 	before := snapshotDirs(t, e.dir, e.incDir, certDir)
 

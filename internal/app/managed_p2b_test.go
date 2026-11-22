@@ -1287,9 +1287,9 @@ func TestApplyChangeExtraIsCaseInsensitive(t *testing.T) {
 	if len(h.Extra) != 1 || h.Extra["ServerAliveInterval"] != "50" {
 		t.Errorf("Extra = %v", h.Extra)
 	}
-	// The writer emits exactly one line.
-	out, err := config.Write(&config.ConfigFile{Hosts: []domain.Host{h}})
-	if err != nil || strings.Count(strings.ToLower(string(out)), "serveraliveinterval") != 1 {
+	// The block writer emits exactly one line.
+	lines, err := config.BlockLines(h)
+	if out := strings.Join(lines, "\n"); err != nil || strings.Count(strings.ToLower(out), "serveraliveinterval") != 1 {
 		t.Errorf("written:\n%s (%v)", out, err)
 	}
 

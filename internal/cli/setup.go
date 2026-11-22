@@ -8,11 +8,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// printHint prints the legacy-mode setup hint (R14) to stderr, after a write
-// command succeeded. Managed mode has no hint.
-func printHint(a *app.App) {
-	if h := a.SetupHint(); h != "" {
-		fmt.Fprintln(os.Stderr, h)
+// printSetupResult prints the setup actions and the notes of res to stderr, in
+// the wording of `sshm setup` (prefix "would " for a dry run).
+func printSetupResult(res app.SetupResult, prefix string) {
+	for _, act := range res.Actions {
+		fmt.Fprintln(os.Stderr, prefix+act)
+	}
+	for _, n := range res.Notes {
+		fmt.Fprintln(os.Stderr, "note: "+n)
 	}
 }
 
@@ -38,12 +41,7 @@ first line of the ssh config. Running it again changes nothing.`,
 			if dryRun {
 				prefix = "would "
 			}
-			for _, act := range res.Actions {
-				fmt.Fprintln(os.Stderr, prefix+act)
-			}
-			for _, n := range res.Notes {
-				fmt.Fprintln(os.Stderr, "note: "+n)
-			}
+			printSetupResult(res, prefix)
 			return nil
 		},
 	}

@@ -61,12 +61,6 @@ func TestParseDisabledMarkers(t *testing.T) {
 	if deployAcq.User != "deploy" || deployAcq.Port != "22" {
 		t.Errorf("deploy-acq-prod options not parsed: User=%q Port=%q", deployAcq.User, deployAcq.Port)
 	}
-	if deployAcq.RawBlock == "" {
-		t.Error("deploy-acq-prod RawBlock should be populated")
-	}
-	if !strings.Contains(deployAcq.RawBlock, "HostName 192.168.1.10") {
-		t.Errorf("RawBlock missing content: %q", deployAcq.RawBlock)
-	}
 
 	deployEu, ok := byName["deploy-eu-prod"]
 	if !ok {
@@ -120,96 +114,9 @@ Host web-2
 	}
 }
 
-// TestWriteRoundTripDisabled checks that parse→write→parse is stable and the
-// disabled block content is preserved verbatim.
-func TestWriteRoundTripDisabled(t *testing.T) {
-	cfg, err := Parse([]byte(disabledFixture))
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-
-	data, err := Write(cfg)
-	if err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-
-	text := string(data)
-	for _, want := range []string{
-		domain.DisabledMarkerStart("deploy"),
-		domain.DisabledMarkerEnd("deploy"),
-		"# Host deploy-acq-prod",
-		"#   HostName 192.168.1.10",
-		"# Host deploy-eu-prod",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("output missing %q:\n%s", want, text)
-		}
-	}
-	// Disabled host lines must be commented out (inert for raw ssh) — an
-	// uncommented "Host deploy-acq-prod" line must NOT appear.
-	for _, banned := range []string{"\nHost deploy-acq-prod", "\n  HostName 192.168.1.10"} {
-		if strings.Contains(text, banned) {
-			t.Errorf("disabled block not commented out: found %q:\n%s", banned, text)
-		}
-	}
-
-	// Second pass must be identical (idempotent round-trip).
-	cfg2, err := Parse(data)
-	if err != nil {
-		t.Fatalf("re-Parse: %v", err)
-	}
-	if len(cfg2.Hosts) != len(cfg.Hosts) {
-		t.Fatalf("re-parse host count = %d, want %d", len(cfg2.Hosts), len(cfg.Hosts))
-	}
-	for i := range cfg.Hosts {
-		a, b := cfg.Hosts[i], cfg2.Hosts[i]
-		if a.Name != b.Name || a.Disabled != b.Disabled || a.Group != b.Group || a.RawBlock != b.RawBlock {
-			t.Errorf("host %d mismatch:\n first: %+v\nsecond: %+v", i, a, b)
-		}
-	}
-	data2, err := Write(cfg2)
-	if err != nil {
-		t.Fatalf("re-Write: %v", err)
-	}
-	if string(data2) != text {
-		t.Errorf("write not idempotent:\nfirst:\n%s\nsecond:\n%s", text, data2)
-	}
-}
-
-// TestWriteVerbatimRestore checks that a disabled host's content survives
-// byte-for-byte (uncommented form in RawBlock, commented form on disk),
-// including comments inside the block.
-func TestWriteVerbatimRestore(t *testing.T) {
-	input := `# sshm disabled group=x start
-# # kept comment
-# Host x-1
-#   HostName 10.0.0.5
-#   # inline comment
-#   User root
-# sshm disabled group=x end
-`
-	cfg, err := Parse([]byte(input))
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	data, err := Write(cfg)
-	if err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	// The commented block between markers must be byte-identical after a
-	// parse→write cycle (round-trip stability).
-	if !strings.Contains(string(data), "# # kept comment\n# Host x-1\n#   HostName 10.0.0.5\n#   # inline comment\n#   User root\n") {
-		t.Errorf("commented block not preserved:\n%s", data)
-	}
-	// RawBlock holds the UNcommented original (what enable restores).
-	if h := cfg.Hosts[0]; !strings.Contains(h.RawBlock, "Host x-1\n  HostName 10.0.0.5") {
-		t.Errorf("RawBlock should hold uncommented original, got: %q", h.RawBlock)
-	}
-}
-
-// TestGroupCommentRoundTrip checks that a non-redundant "# group:" comment
-// survives parse→write cycles.
-func TestGroupCommentRoundTrip(t *testing.T) {
+// TestGroupCommentInBlockLines checks that a non-redundant "# group:" comment
+// of a parsed host is part of the canonical block BlockLines renders.
+func TestGroupCommentInBlockLines(t *testing.T) {
 	input := `# group: prod
 Host web-prod-1
   HostName 10.0.0.1
@@ -218,26 +125,26 @@ Host web-prod-1
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	data, err := Write(cfg)
+	lines, err := BlockLines(cfg.Hosts[0])
 	if err != nil {
-		t.Fatalf("Write: %v", err)
+		t.Fatalf("BlockLines: %v", err)
 	}
-	if !strings.Contains(string(data), "# group: prod\n") {
-		t.Errorf("group comment lost:\n%s", data)
+	if got := strings.Join(lines, "\n"); !strings.Contains(got, "# group: prod\n") {
+		t.Errorf("group comment lost:\n%s", got)
 	}
 
-	// Redundant comments (matching the prefix heuristic) are not re-emitted.
+	// Redundant comments (matching the prefix heuristic) are not emitted.
 	cfg2, err := Parse([]byte("Host web-1\n  HostName 10.0.0.1\n"))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
 	cfg2.Hosts[0].Group = "web" // equals GroupFor("web-1")
-	data2, err := Write(cfg2)
+	lines2, err := BlockLines(cfg2.Hosts[0])
 	if err != nil {
-		t.Fatalf("Write: %v", err)
+		t.Fatalf("BlockLines: %v", err)
 	}
-	if strings.Contains(string(data2), "# group:") {
-		t.Errorf("redundant group comment should be omitted:\n%s", data2)
+	if got := strings.Join(lines2, "\n"); strings.Contains(got, "# group:") {
+		t.Errorf("redundant group comment should be omitted:\n%s", got)
 	}
 }
 
