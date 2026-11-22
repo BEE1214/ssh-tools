@@ -60,6 +60,7 @@ ssh directly. Add -N yourself for no-shell tunnels.`,
 		newForwardCmd(),
 		newSetupCmd(),
 		newImportCmd(),
+		newDoctorCmd(),
 		newVersionCmd(),
 	)
 

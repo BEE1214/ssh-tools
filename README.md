@@ -232,5 +232,3 @@ go build -o bin/sshm ./cmd/sshm/
 ## License
 
 GPL-2.0-only. See [LICENSE](LICENSE).
-
-Same license as the Linux kernel.
