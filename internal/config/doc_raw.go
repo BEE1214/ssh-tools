@@ -119,8 +119,9 @@ type RegionHost struct {
 }
 
 // RegionHosts lists the Host lines inside the disabled region b, in file
-// order. A region the legacy group disable wrote holds the adjacent hosts of
-// the group between ONE pair of markers, so a region can name several hosts.
+// order. A region the group disable of an earlier sshm wrote holds the adjacent
+// hosts of the group between ONE pair of markers, so a region can name several
+// hosts.
 func (d *Doc) RegionHosts(b Block) []RegionHost {
 	if !b.Disabled {
 		return nil

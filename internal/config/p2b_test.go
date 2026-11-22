@@ -177,19 +177,6 @@ func TestIncludeSplittingAgreesWithSSH(t *testing.T) {
 	}
 }
 
-// A normal config still round-trips through the legacy writer unchanged.
-func TestParseWriteNormalConfigUnchangedBySplitter(t *testing.T) {
-	in := "Host web-1\n  HostName 10.0.0.1\n  User alice\n\nHost a b\n  User multi\n\nHost *\n  User fallback\n"
-	cfg, err := Parse([]byte(in))
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, err := Write(cfg)
-	if err != nil || string(out) != in {
-		t.Errorf("Write output changed:\n%s(%v)", out, err)
-	}
-}
-
 // ---- M5: Doc and Parse agree on disabled regions ----
 
 func TestDoc_DisableWithoutBlankLineAgreesWithParse(t *testing.T) {
@@ -221,16 +208,6 @@ func TestDoc_DisableWithoutBlankLineAgreesWithParse(t *testing.T) {
 	}
 	if err := docVsParse(d); err != nil {
 		t.Error(err)
-	}
-
-	// The legacy writer keeps all three and the round trip is stable.
-	out, err := Write(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg2, err := Parse(out)
-	if err != nil || len(cfg2.Hosts) != 3 || !cfg2.Hosts[1].Disabled || cfg2.Hosts[1].Name != "b" {
-		t.Errorf("after Write: %v %v\n%s", hostNames(cfg2), err, out)
 	}
 
 	mustOK(t, d.EnableGroup("g"))

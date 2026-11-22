@@ -50,13 +50,6 @@ func TestParseStrayEndMarker(t *testing.T) {
 			t.Errorf("host %q wrongly disabled", h.Name)
 		}
 	}
-	out, err := Write(cfg)
-	if err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if !strings.Contains(string(out), domain.DisabledMarkerEnd("grp")) {
-		t.Errorf("stray end marker comment lost on write:\n%s", out)
-	}
 }
 
 // TestParseNestedStartMarker: a start marker inside an open disabled block
@@ -186,9 +179,9 @@ func TestParseMarkerInsideHostBlock(t *testing.T) {
 	}
 }
 
-// TestParseWriteRoundTripMalformedMarkers: Parse→Write never drops hosts when
-// markers are malformed but the file is accepted.
-func TestParseWriteRoundTripMalformedMarkers(t *testing.T) {
+// TestParseMalformedMarkersKeepsHosts: Parse never drops hosts when markers are
+// malformed but the file is accepted.
+func TestParseMalformedMarkersKeepsHosts(t *testing.T) {
 	in := "Host a\n  HostName 10.0.0.1\n" +
 		domain.DisabledMarkerStart("grp") + "\n" +
 		"\n" +
@@ -200,23 +193,15 @@ func TestParseWriteRoundTripMalformedMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	out, err := Write(cfg)
-	if err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	cfg2, err := Parse(out)
-	if err != nil {
-		t.Fatalf("re-Parse: %v", err)
-	}
 	for _, want := range []string{"a", "b", "c"} {
 		found := false
-		for _, n := range hostNames(cfg2) {
+		for _, n := range hostNames(cfg) {
 			if n == want {
 				found = true
 			}
 		}
 		if !found {
-			t.Errorf("host %q lost in round-trip: %v\n%s", want, hostNames(cfg2), out)
+			t.Errorf("host %q lost: %v", want, hostNames(cfg))
 		}
 	}
 }

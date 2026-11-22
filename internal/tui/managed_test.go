@@ -159,29 +159,33 @@ func TestTmT7_FailedReloadKeepsTheLastSnapshot(t *testing.T) {
 	}
 }
 
-// T7: every save re-evaluates editing. Here the config is replaced by a
-// legacy one while the form is open; after the (legacy) save the next n is
-// refused.
-func TestTmT7_SaveReevaluatesEditing(t *testing.T) {
+// T7: the config is replaced by one that is not set up while the form is open:
+// the save is refused by the gate (P7 G1), shown in the form, and writes
+// nothing. After the form is closed and the config reloaded, the next n is
+// refused with the setup toast.
+func TestTmT7_SaveAfterTheIncludeVanishedIsRefused(t *testing.T) {
 	t.Parallel()
 	m, e := tmManaged(t, false)
 	m = onHost(m, "web-1")
 	m, _ = press(m, "e", "tab")
 	m = set(m, "root")
 	tmWrite(t, e.main, e.sub(tmLegacyMainBody), 0o600) // web-1 now lives in the main file, no Include
+	before := readFile(t, e.main)
 	m, _ = press(m, "ctrl+s")
-	if m.mode != modeList || m.toastErr || !strings.Contains(m.toast, "saved web-1") {
-		t.Fatalf("save: mode=%v toast=%q err=%v", m.mode, m.toast, m.toastErr)
+	if m.mode != modeEditor || m.editor == nil || !strings.Contains(m.editor.err, "sshm is not set up") {
+		t.Fatalf("save: mode=%v toast=%q, want the form to stay open with the gate error", m.mode, m.toast)
 	}
-	if !strings.Contains(readFile(t, e.main), "User root") {
-		t.Fatalf("fixture: the edit did not land in the main file:\n%s", readFile(t, e.main))
+	if got := readFile(t, e.main); got != before {
+		t.Fatalf("the refused save wrote to the config:\n%s", got)
 	}
+	m, _ = press(m, "esc")
+	m, _ = press(m, "r")
 	if h := tmHints(m); strings.Contains(h, "e edit") {
-		t.Errorf("hints after the save still list edit keys: %q", h)
+		t.Errorf("hints after the reload still list edit keys: %q", h)
 	}
 	m, _ = press(m, "n")
 	if m.mode != modeList || m.toast != tmSetupToast(e) {
-		t.Errorf("n after the save: mode=%v toast=%q, want the setup toast", m.mode, m.toast)
+		t.Errorf("n after the reload: mode=%v toast=%q, want the setup toast", m.mode, m.toast)
 	}
 }
 

@@ -136,11 +136,11 @@ func TestImplRouting_InitReport(t *testing.T) {
 	if written || note == "" {
 		t.Errorf("existing Host *: written=%v note=%q", written, note)
 	}
-	legacy := newMgEnv(t, "Host a\n  HostName 10.0.0.1\n", mgAbsent)
-	written, _, err = legacy.a.InitDefaultsReport()
+	setUp := newMgEnv(t, "Include @M@\n\nHost a\n  HostName 10.0.0.1\n", mgManagedHeader)
+	written, _, err = setUp.a.InitDefaultsReport()
 	mgRequireNoErr(t, err)
 	if !written {
-		t.Error("legacy init reported nothing written")
+		t.Error("init without a Host * reported nothing written")
 	}
 }
 

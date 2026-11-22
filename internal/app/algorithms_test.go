@@ -39,7 +39,7 @@ func modernSSH() map[string][]string {
 
 func initAndRead(t *testing.T) (string, string) {
 	t.Helper()
-	a, path := initEnv(t, "Host web1\n  HostName 10.0.0.1\n")
+	a, path := initSetUpEnv(t, "Host web1\n  HostName 10.0.0.1\n")
 	if _, err := a.InitDefaults(); err != nil {
 		t.Fatal(err)
 	}

@@ -10,7 +10,7 @@ import (
 // disabled group must return a clear error and leave the config untouched
 // (they used to save successfully while silently dropping the change).
 func TestMutationsOnDisabledHostRefused(t *testing.T) {
-	a := newTestApp(t, groupFixture)
+	a := newSetUpTestApp(t, groupFixture)
 	if err := a.DisableGroup("deploy"); err != nil {
 		t.Fatal(err)
 	}

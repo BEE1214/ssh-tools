@@ -8,148 +8,50 @@ import (
 	"github.com/adamdvorsky/ssh-tools/internal/domain"
 )
 
-// AddHost adds a new host to the config file.
-// Returns an error if a host with the same name already exists.
+// AddHost adds a new host to the managed file. It returns ErrNotSetUp when the
+// config is not set up, and an error if a host with the same name already
+// exists in any loaded file.
 func (a *App) AddHost(h domain.Host) error {
-	if v, err := a.activeView(); err != nil {
-		return err
-	} else if v != nil {
-		return a.addHostManaged(v, h)
-	}
-	// The name must not exist in ANY loaded file, not only the main one.
-	if err := a.ensureInMain(h.Name); err != nil {
-		return err
-	}
-	cfg, err := a.load()
+	v, err := a.gate()
 	if err != nil {
 		return err
 	}
-
-	if findHostIndex(cfg.Hosts, h.Name) != -1 {
-		return fmt.Errorf("host %q already exists", h.Name)
-	}
-
-	// Set group if not already set.
-	if h.Group == "" {
-		h.Group = domain.GroupFor(h.Name)
-	}
-	h.Source = domain.SourceManual
-
-	cfg.Hosts = append(cfg.Hosts, h)
-	return a.save(cfg)
+	return a.addHostManaged(v, h)
 }
 
-// EditHost applies changes to an existing host.
+// EditHost applies changes to an existing host of the managed file.
 // changes is a map of field name to new value. Known field names:
 // hostname, user, port, identityfile, proxyjump, proxycommand,
 // forwardagent, forwardx11, stricthostkeychecking, loglevel
 func (a *App) EditHost(name string, changes map[string]string) error {
-	if v, err := a.activeView(); err != nil {
-		return err
-	} else if v != nil {
-		return a.editHostManaged(v, name, changes)
-	}
-	if err := a.ensureInMain(name); err != nil {
-		return err
-	}
-	cfg, err := a.load()
+	v, err := a.gate()
 	if err != nil {
 		return err
 	}
-
-	idx := findHostIndex(cfg.Hosts, name)
-	if idx == -1 {
-		return fmt.Errorf("host %q not found", name)
-	}
-
-	h := &cfg.Hosts[idx]
-	if err := ensureEditable(*h); err != nil {
-		return err
-	}
-	if h.Source == domain.SourceDevPod {
-		return fmt.Errorf("host %q is managed by DevPod — edit via DevPod instead", name)
-	}
-
-	for key, value := range changes {
-		applyChange(h, key, value)
-	}
-
-	return a.save(cfg)
+	return a.editHostManaged(v, name, changes)
 }
 
-// DeleteHost removes a host from the config file.
+// DeleteHost removes a host from the managed file.
 func (a *App) DeleteHost(name string) error {
-	if v, err := a.activeView(); err != nil {
-		return err
-	} else if v != nil {
-		return a.deleteHostManaged(v, name)
-	}
-	if err := a.ensureInMain(name); err != nil {
-		return err
-	}
-	cfg, err := a.load()
+	v, err := a.gate()
 	if err != nil {
 		return err
 	}
-
-	idx := findHostIndex(cfg.Hosts, name)
-	if idx == -1 {
-		return fmt.Errorf("host %q not found", name)
-	}
-
-	if cfg.Hosts[idx].Source == domain.SourceDevPod {
-		return fmt.Errorf("host %q is managed by DevPod — remove via DevPod instead", name)
-	}
-
-	cfg.Hosts = append(cfg.Hosts[:idx], cfg.Hosts[idx+1:]...)
-	return a.save(cfg)
+	return a.deleteHostManaged(v, name)
 }
 
 // DuplicateHost creates a copy of an existing host with a new name.
 func (a *App) DuplicateHost(srcName, newName string) error {
-	if v, err := a.activeView(); err != nil {
-		return err
-	} else if v != nil {
-		return a.duplicateHostManaged(v, srcName, newName)
-	}
-	if err := a.ensureInMain(srcName); err != nil {
-		return err
-	}
-	if err := a.ensureInMain(newName); err != nil {
-		return err
-	}
-	cfg, err := a.load()
+	v, err := a.gate()
 	if err != nil {
 		return err
 	}
-
-	idx := findHostIndex(cfg.Hosts, srcName)
-	if idx == -1 {
-		return fmt.Errorf("source host %q not found", srcName)
-	}
-	if err := ensureEditable(cfg.Hosts[idx]); err != nil {
-		return err
-	}
-
-	if findHostIndex(cfg.Hosts, newName) != -1 {
-		return fmt.Errorf("host %q already exists", newName)
-	}
-
-	dup := cfg.Hosts[idx]
-	dup.Name = newName
-	dup.Patterns = nil // derived from the old Name, see domain.Host.Patterns
-	dup.Group = domain.GroupFor(newName)
-	dup.Source = domain.SourceManual
-	dup.LineStart = 0
-	dup.LineEnd = 0
-
-	cfg.Hosts = append(cfg.Hosts, dup)
-	return a.save(cfg)
+	return a.duplicateHostManaged(v, srcName, newName)
 }
 
 // ensureEditable rejects modifications of a host that is commented out of the
-// config (disabled group). The writer re-emits a disabled host's verbatim
-// block, so any field change would be silently lost.
+// config (disabled group): a field change of a disabled block would be lost
+// when the group is enabled again.
 func ensureEditable(h domain.Host) error {
 	if isHostDisabled(h) {
 		return fmt.Errorf(

@@ -400,6 +400,17 @@ func (d *Doc) lookup(host string, requirePlain bool) (Block, []lineKind, error) 
 			break
 		}
 	}
+	// A block whose Host line names only host wins over a line that lists it
+	// among several patterns (P7 M2): the first can be edited, the second never.
+	var single []Block
+	for _, b := range hits {
+		if len(b.Names) == 1 {
+			single = append(single, b)
+		}
+	}
+	if len(single) > 0 {
+		hits = single
+	}
 	switch {
 	case len(hits) == 0 && matchHit:
 		return Block{}, nil, fmt.Errorf("%w: %q is part of a Match block, which sshm never edits", ErrNotPlainHost, host)
@@ -736,8 +747,8 @@ func (d *Doc) DuplicateBlock(src, dst string) error {
 
 // DisableBlocks wraps each named block in "# sshm disabled group=<group>
 // start/end" markers with every non-blank line prefixed "# " (the format of
-// the legacy group disable, so the parser and ssh both see commented-out
-// text). All names are checked first: on error nothing changes.
+// the group disable of earlier sshm versions, so the parser and ssh both see
+// commented-out text). All names are checked first: on error nothing changes.
 func (d *Doc) DisableBlocks(names []string, group string) error {
 	if err := domain.ValidateGroupName(group); err != nil {
 		return err

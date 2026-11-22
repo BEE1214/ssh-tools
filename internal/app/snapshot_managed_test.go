@@ -415,10 +415,12 @@ func TestSmgT3_LegacyReasons(t *testing.T) {
 			t.Errorf("ReadOnlyReason(%s) = %q, want %q", name, got, reason)
 		}
 	}
-	// The text really is the one EditHost returns today.
-	err := e.a.EditHost("inc-1", map[string]string{"user": "x"})
-	if err == nil || err.Error() != smgLegacyIncludedMsg("inc-1", e.smgExtra()) {
-		t.Fatalf("fixture: legacy EditHost refusal = %v", err)
+	// The reason is only what the TUI shows: EditHost itself is refused by the
+	// gate first (P7 G1), also for the hosts without a reason.
+	for _, name := range []string{"inc-1", "web-1"} {
+		if err := e.a.EditHost(name, map[string]string{"user": "x"}); !errors.Is(err, ErrNotSetUp) {
+			t.Errorf("EditHost(%s) = %v, want ErrNotSetUp", name, err)
+		}
 	}
 }
 
@@ -461,16 +463,6 @@ func TestSmgT4_ParityWithEditHostInManagedMode(t *testing.T) {
 	// 13 entries minus the gated old-1/old-2 and the two DevPod hosts.
 	if n := smgParity(t, e, true); n != 9 {
 		t.Errorf("parity checked %d hosts, want 9 (fixture changed?)", n)
-	}
-}
-
-func TestSmgT4_ParityWithEditHostInLegacyMode(t *testing.T) {
-	t.Parallel()
-	e := smgLegacyEnv(t)
-	// The legacy writer re-serializes the file on every save, so only the
-	// ownership decision is compared here.
-	if n := smgParity(t, e, false); n != 7 {
-		t.Errorf("parity checked %d hosts, want 7 (fixture changed?)", n)
 	}
 }
 
@@ -572,12 +564,6 @@ func TestSmgT5_CheckEditOnManagedHostsMatchesValidate(t *testing.T) {
 	smgCheckEditMatchesValidate(t, smgManagedEnv(t, false))
 }
 
-// T5 legacy: unchanged behaviour (characterization, passes on the skeleton).
-func TestSmgT5_CheckEditLegacyMatchesValidate(t *testing.T) {
-	t.Parallel()
-	smgCheckEditMatchesValidate(t, smgLegacyEnv(t))
-}
-
 // T5: the issues of a managed-file host point at the host's own block (file
 // and line as domain.Validate reports them for the loaded host).
 func TestSmgT5_IssueLocationIsTheManagedBlock(t *testing.T) {
@@ -670,17 +656,16 @@ func TestSmgT5_CheckEditKeepsGateAndDevPodRefusals(t *testing.T) {
 	mgRequireUnchanged(t, before, e.snap(t))
 }
 
-// T5 legacy: the refusals stay what they were (characterization).
-func TestSmgT5_CheckEditLegacyRefusals(t *testing.T) {
+// T5 not set up: CheckEdit is refused by the gate before anything else (P7
+// G1, G3), for an included host and an unknown one alike.
+func TestSmgT5_CheckEditNotSetUpIsGated(t *testing.T) {
 	t.Parallel()
 	e := smgLegacyEnv(t)
 	before := e.snap(t)
-	_, err := e.a.CheckEdit("inc-1", map[string]string{"user": "zed"})
-	if err == nil || err.Error() != smgLegacyIncludedMsg("inc-1", e.smgExtra()) {
-		t.Errorf("CheckEdit(inc-1) = %v, want %q", err, smgLegacyIncludedMsg("inc-1", e.smgExtra()))
-	}
-	if _, err := e.a.CheckEdit("nope-1", nil); err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Errorf("CheckEdit(unknown) = %v, want not found", err)
+	for _, name := range []string{"inc-1", "nope-1", "web-1"} {
+		if _, err := e.a.CheckEdit(name, map[string]string{"user": "zed"}); !errors.Is(err, ErrNotSetUp) {
+			t.Errorf("CheckEdit(%s) = %v, want ErrNotSetUp", name, err)
+		}
 	}
 	mgRequireUnchanged(t, before, e.snap(t))
 }

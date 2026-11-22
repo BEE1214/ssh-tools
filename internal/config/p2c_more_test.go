@@ -150,9 +150,7 @@ func TestIsMatchExecLineAgreesWithSSH(t *testing.T) {
 
 // A start marker below a host block with no end marker is a comment for the
 // parser (as before P2b) and for ssh; the Doc treats everything from it to
-// the end of the file as opaque. Neither path edits that part: the legacy
-// writer only drops the comment line (as it drops every comment inside a
-// block) and keeps the options around it, the Doc refuses.
+// the end of the file as opaque; the Doc refuses to edit that part.
 func TestUnterminatedMarkerBelowHostBlock(t *testing.T) {
 	marker := domain.DisabledMarkerStart("grp")
 	in := "Host a\n  HostName 10.0.0.1\n" + marker + "\n  User root\n\nHost b\n  HostName 10.0.0.2\n\nHost *\n  User fallback\n"
@@ -167,29 +165,14 @@ func TestUnterminatedMarkerBelowHostBlock(t *testing.T) {
 	if cfg.Hosts[0].User != "root" || cfg.Hosts[0].Disabled || cfg.Hosts[1].Disabled {
 		t.Errorf("hosts = %+v", cfg.Hosts)
 	}
-	for _, c := range cfg.Comments {
-		if strings.Contains(c.Text, "User root") {
-			t.Errorf("an active option was moved into Comments: %q", c.Text)
-		}
-	}
-	out, err := Write(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	// ssh reads the file the same way, before and after a legacy write.
+	// ssh reads the file the same way.
 	if _, lerr := exec.LookPath("ssh"); lerr == nil {
 		dir := t.TempDir()
 		before := write(t, filepath.Join(dir, "before"), in)
-		after := write(t, filepath.Join(dir, "after"), string(out))
 		for name, user := range map[string]string{"a": "root", "b": "fallback", "other": "fallback"} {
 			if got := sshUser(t, before, name); got != user {
 				t.Errorf("ssh -G %s: user %q, the test expects %q", name, got, user)
-			}
-			b, _ := sshGRaw(before, name)
-			a, _ := sshGRaw(after, name)
-			if b != a {
-				t.Errorf("ssh -G %s differs after the legacy Parse->Write", name)
 			}
 			got, _ := domain.EffectiveConfig(cfg.Hosts, name)
 			if got.User != user {
@@ -245,9 +228,6 @@ func TestUnterminatedMarkerOutsideBlockStillFails(t *testing.T) {
 //   - around commented-out lines it is a disabled region that ends the block
 //     for now (P2b; Doc.DisableBlocks writes this layout), and option lines
 //     right after the end marker still belong to the block above.
-//
-// In both cases nothing active lands in Comments, which Write emits at the
-// top of the file.
 func TestParseMarkerPairAroundActiveLines(t *testing.T) {
 	start, end := domain.DisabledMarkerStart("grp"), domain.DisabledMarkerEnd("grp")
 	for _, c := range []struct {
@@ -292,34 +272,17 @@ func TestParseMarkerPairAroundActiveLines(t *testing.T) {
 			if a := cfg.Hosts[0]; a.User != "root" || a.Port != "2222" || a.HostName != "10.0.0.1" {
 				t.Errorf("host a = %+v, want user root, port 2222", a)
 			}
-			for _, cm := range cfg.Comments {
-				if strings.Contains(cm.Text, "User root") || strings.Contains(cm.Text, "Port 2222") {
-					t.Errorf("an active option was moved into Comments: %q", cm.Text)
-				}
-			}
-			out, err := Write(cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
 			if _, lerr := exec.LookPath("ssh"); lerr != nil {
 				return
 			}
 			dir := t.TempDir()
 			before := write(t, filepath.Join(dir, "before"), c.in)
-			after := write(t, filepath.Join(dir, "after"), string(out))
-			for _, name := range []string{"a", "b", "z", "other"} {
-				b, bok := sshGRaw(before, name)
-				a, aok := sshGRaw(after, name)
-				if !bok || !aok || b != a {
-					t.Errorf("ssh -G %s differs after the legacy Parse->Write (ok %v/%v):\n%s", name, bok, aok, out)
-				}
-			}
 			if got := sshG(t, before, "a"); first(got["user"]) != "root" || first(got["port"]) != "2222" {
 				t.Errorf("ssh reads host a as user %v port %v; the test expects root, 2222", got["user"], got["port"])
 			}
-			// A global option would show up for an unrelated host.
-			if got := sshG(t, after, "other"); first(got["port"]) != "22" {
-				t.Errorf("after the write an unrelated host has port %v: an option of host a became global", got["port"])
+			// The options belong to host a, they are not global.
+			if got := sshG(t, before, "other"); first(got["port"]) != "22" {
+				t.Errorf("an unrelated host has port %v: an option of host a is global", got["port"])
 			}
 		})
 	}

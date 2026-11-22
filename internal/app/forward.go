@@ -10,45 +10,11 @@ import (
 
 // AddForward validates and appends forward specs to a host's config block.
 func (a *App) AddForward(host string, kind domain.ForwardKind, specs []string) error {
-	if v, err := a.activeView(); err != nil {
-		return err
-	} else if v != nil {
-		return a.addForwardManaged(v, host, kind, specs)
-	}
-	if err := a.ensureInMain(host); err != nil {
-		return err
-	}
-	cfg, err := a.load()
+	v, err := a.gate()
 	if err != nil {
 		return err
 	}
-
-	if err := a.ensureNotDisabled(cfg, host); err != nil {
-		return err
-	}
-
-	idx := findHostIndex(cfg.Hosts, host)
-	if idx == -1 {
-		return fmt.Errorf("host %q not found", host)
-	}
-
-	h := &cfg.Hosts[idx]
-	for _, spec := range specs {
-		entry, err := domain.ParseForwardSpec(kind, spec)
-		if err != nil {
-			return err
-		}
-		switch kind {
-		case domain.ForwardRemote:
-			h.RemoteForwards = append(h.RemoteForwards, entry)
-		case domain.ForwardDynamic:
-			h.DynamicForwards = append(h.DynamicForwards, entry)
-		default:
-			h.LocalForwards = append(h.LocalForwards, entry)
-		}
-	}
-
-	return a.save(cfg)
+	return a.addForwardManaged(v, host, kind, specs)
 }
 
 // ListForwards returns a host's own config block (not merged with
@@ -70,34 +36,11 @@ func (a *App) ListForwards(host string) (domain.Host, error) {
 // ClearForwards removes all forward entries (local, remote, and dynamic)
 // from a host's config block.
 func (a *App) ClearForwards(host string) error {
-	if v, err := a.activeView(); err != nil {
-		return err
-	} else if v != nil {
-		return a.clearForwardsManaged(v, host)
-	}
-	if err := a.ensureInMain(host); err != nil {
-		return err
-	}
-	cfg, err := a.load()
+	v, err := a.gate()
 	if err != nil {
 		return err
 	}
-
-	if err := a.ensureNotDisabled(cfg, host); err != nil {
-		return err
-	}
-
-	idx := findHostIndex(cfg.Hosts, host)
-	if idx == -1 {
-		return fmt.Errorf("host %q not found", host)
-	}
-
-	h := &cfg.Hosts[idx]
-	h.LocalForwards = nil
-	h.RemoteForwards = nil
-	h.DynamicForwards = nil
-
-	return a.save(cfg)
+	return a.clearForwardsManaged(v, host)
 }
 
 // RunForward replaces the current process with ssh -N plus one -L/-R/-D
@@ -117,15 +60,24 @@ func (a *App) RunForward(host string, kind domain.ForwardKind, specs []string, s
 // the process, which is the only point where a caller can still say anything
 // after a successful --save.
 func (a *App) RunForwardNotify(host string, kind domain.ForwardKind, specs []string, save bool, afterSave func()) error {
+	// --save writes the host's block, so the gate applies up front, before
+	// anything else and before anything is exec'd (P7 G3).
+	var v *managedView
+	if save {
+		var err error
+		if v, err = a.gate(); err != nil {
+			return err
+		}
+	}
 	// The host goes on the ssh command line as a plain argument (see
-	// checkHostArg). Checked first: nothing is saved for a refused name.
+	// checkHostArg). Checked before anything is saved.
 	if err := checkHostArg(host); err != nil {
 		return err
 	}
-	// --save writes the host's block, so the write guard applies up front,
-	// before anything is exec'd. Without --save an included host is fine.
+	// The write guard of the host, also before anything is exec'd. Without
+	// --save an included host is fine.
 	if save {
-		if err := a.guardWrite(host); err != nil {
+		if err := v.unmanaged(host); err != nil {
 			return err
 		}
 	}

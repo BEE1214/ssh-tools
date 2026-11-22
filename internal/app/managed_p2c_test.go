@@ -21,57 +21,6 @@ import (
 
 // ---- Item 1 (R1): a legacy save keeps odd Host lines ----
 
-// The reviewer's repro: a config with "Host # placeholder" (valid for ssh: a
-// block that matches nothing), then any legacy edit of another host. P2b
-// wrote the line back as a bare "Host ", which ssh refuses to load.
-func TestLegacyEditKeepsOddHostLines(t *testing.T) {
-	const in = `Host # placeholder
-  User x
-
-Host "a b"
-  User quoted
-
-Host c # the c box
-  User commented
-
-Host a
-  User y
-`
-	a := newTestApp(t, in)
-	if err := a.EditHost("a", map[string]string{"user": "z"}); err != nil {
-		t.Fatal(err)
-	}
-	got := configAfter(t, a)
-	for _, want := range []string{"Host # placeholder\n", "Host \"a b\"\n", "Host c # the c box\n", "Host a\n  User z\n"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("after the edit the config lacks %q:\n%s", want, got)
-		}
-	}
-	for _, l := range strings.Split(got, "\n") {
-		if strings.TrimSpace(l) == "Host" {
-			t.Errorf("the edit wrote a bare Host line:\n%s", got)
-		}
-	}
-	if _, err := os.Stat(a.ConfigPath()); err != nil {
-		t.Fatal(err)
-	}
-	requireSSH(t)
-	// ssh still loads the file, and nothing but the edited option moved.
-	for name, user := range map[string]string{"a": "z", "c": "commented"} {
-		out, err := a.sshG(name)
-		if err != nil {
-			t.Fatalf("ssh refuses the config after a legacy edit: %v", err)
-		}
-		if got := optionValues(out)["user"]; !reflect.DeepEqual(got, []string{user}) {
-			t.Errorf("ssh -G %s: user %v, want %s", name, got, user)
-		}
-	}
-	// "a b" is ONE pattern: host b must not have picked up the quoted block.
-	if out, err := a.sshG("b"); err != nil || reflect.DeepEqual(optionValues(out)["user"], []string{"quoted"}) {
-		t.Errorf("host b resolves the user of the \"a b\" block (err=%v)", err)
-	}
-}
-
 // ---- Item 2 (R2): token-derived options need an exact prediction ----
 
 // richTokenFixture: a main file whose Host * uses tokens in every option
@@ -805,7 +754,7 @@ func TestConnectRefusesHostNamesThatLookLikeOptions(t *testing.T) {
 }
 
 func TestRunForwardRefusesHostNamesThatLookLikeOptions(t *testing.T) {
-	a := newTestApp(t, optionNameFixture)
+	a := newSetUpTestApp(t, optionNameFixture)
 	before := configAfter(t, a)
 	calls := captureExec(t)
 	for _, save := range []bool{false, true} {

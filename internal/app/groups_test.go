@@ -10,7 +10,8 @@ import (
 )
 
 // newTestApp writes a config fixture to a temp dir and returns an App
-// rooted at it.
+// rooted at it. The config is NOT set up (no Include of a managed file): use
+// it for read-only tests and for the gate; write tests use newSetUpTestApp.
 func newTestApp(t *testing.T, config string) *App {
 	t.Helper()
 	dir := t.TempDir()
@@ -19,6 +20,25 @@ func newTestApp(t *testing.T, config string) *App {
 		t.Fatal(err)
 	}
 	return NewAppWithPath(path)
+}
+
+// newSetUpTestApp is newTestApp for a set-up config: the main file holds only
+// the Include line, hosts is the content of the managed file after its header.
+func newSetUpTestApp(t *testing.T, hosts string) *App {
+	t.Helper()
+	dir := t.TempDir()
+	main := filepath.Join(dir, "config")
+	managed := filepath.Join(dir, "config.d", "sshm.conf")
+	if err := os.Mkdir(filepath.Dir(managed), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(managed, []byte(mgManagedHeader+"\n"+hosts), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(main, []byte("Include "+managed+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return NewAppWithPath(main)
 }
 
 const groupFixture = `Host web-1
@@ -37,9 +57,15 @@ Host misc
   HostName 10.0.0.9
 `
 
+// configAfter returns the file the writes of a go to: the managed file of a
+// set-up config, else the main file.
 func configAfter(t *testing.T, a *App) string {
 	t.Helper()
-	data, err := os.ReadFile(a.ConfigPath())
+	path := a.ConfigPath()
+	if active, err := a.ManagedActive(); err == nil && active {
+		path = a.ManagedPath()
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +75,7 @@ func configAfter(t *testing.T, a *App) string {
 // TestDisableEnableCycle covers the full disable → config check → enable
 // cycle against a temp config.
 func TestDisableEnableCycle(t *testing.T) {
-	a := newTestApp(t, groupFixture)
+	a := newSetUpTestApp(t, groupFixture)
 
 	// Disable the deploy group.
 	if err := a.DisableGroup("deploy"); err != nil {
@@ -88,12 +114,12 @@ func TestDisableEnableCycle(t *testing.T) {
 
 	// Gate: connect to an enabled host still works (exec fails on missing
 	// ssh binary only in test env; here we assert no group error).
-	cfg, err := a.load()
+	l, err := a.loadAll()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.ensureNotDisabled(cfg, "web-1"); err != nil {
-		t.Errorf("ensureNotDisabled(web-1): %v", err)
+	if err := a.ensureHostNotDisabled(l.Hosts, "web-1"); err != nil {
+		t.Errorf("ensureHostNotDisabled(web-1): %v", err)
 	}
 
 	// State file should list the group.
@@ -124,12 +150,12 @@ func TestDisableEnableCycle(t *testing.T) {
 	}
 
 	// Gate open again.
-	cfg, err = a.load()
+	l, err = a.loadAll()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.ensureNotDisabled(cfg, "deploy-acq"); err != nil {
-		t.Errorf("ensureNotDisabled(deploy-acq) after enable: %v", err)
+	if err := a.ensureHostNotDisabled(l.Hosts, "deploy-acq"); err != nil {
+		t.Errorf("ensureHostNotDisabled(deploy-acq) after enable: %v", err)
 	}
 
 	// State file cleaned up.
@@ -145,7 +171,7 @@ func TestDisableEnableCycle(t *testing.T) {
 // TestDisableEnableTwice verifies two consecutive disable/enable cycles
 // leave exactly one marker pair and the original bytes.
 func TestDisableEnableTwice(t *testing.T) {
-	a := newTestApp(t, groupFixture)
+	a := newSetUpTestApp(t, groupFixture)
 
 	for i := 0; i < 2; i++ {
 		if err := a.DisableGroup("deploy"); err != nil {
@@ -167,7 +193,7 @@ func TestDisableEnableTwice(t *testing.T) {
 
 // TestDisableUnknownGroup checks error handling for unknown groups.
 func TestDisableUnknownGroup(t *testing.T) {
-	a := newTestApp(t, groupFixture)
+	a := newSetUpTestApp(t, groupFixture)
 	if err := a.DisableGroup("nope"); err == nil {
 		t.Error("DisableGroup(unknown) should fail")
 	}
@@ -182,7 +208,7 @@ func TestDisableUnknownGroup(t *testing.T) {
 
 // TestListGroupsState checks the group listing with disabled markers.
 func TestListGroupsState(t *testing.T) {
-	a := newTestApp(t, groupFixture)
+	a := newSetUpTestApp(t, groupFixture)
 	if err := a.DisableGroup("deploy"); err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +231,7 @@ func TestListGroupsState(t *testing.T) {
 
 // TestCopyGate checks that Copy refuses disabled-group remote targets.
 func TestCopyGate(t *testing.T) {
-	a := newTestApp(t, groupFixture)
+	a := newSetUpTestApp(t, groupFixture)
 	if err := a.DisableGroup("deploy"); err != nil {
 		t.Fatal(err)
 	}

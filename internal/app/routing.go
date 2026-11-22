@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -12,19 +14,19 @@ import (
 	"github.com/adamdvorsky/ssh-tools/internal/domain"
 )
 
-// Write routing in managed mode (PLAN-p3-p4.md section 4). In managed mode the
-// write methods of App (AddHost, EditHost, ...) do not re-serialize the main
-// file: they patch lines of the managed file through config.Doc and save it
-// with saveManagedDoc. In legacy mode they run the code they always had.
+// Write routing (PLAN-p3-p4.md section 4, PLAN-p7.md). The write methods of App
+// (AddHost, EditHost, ...) never re-serialize the main file: they patch lines
+// of the managed file through config.Doc and save it with saveManagedDoc. Each
+// of them starts with gate, so a config that is not set up is refused first.
 
-// managedView is the loaded configuration of an App that runs in managed mode.
+// managedView is the loaded configuration of an App that is set up.
 type managedView struct {
 	l    *config.Loaded
 	file config.File // the managed file as loaded (Path is what hosts carry as SourceFile)
 }
 
-// activeView loads the configuration and returns the managed view, or nil in
-// legacy mode (see ManagedActive).
+// activeView loads the configuration and returns the managed view, or nil when
+// the config is not set up (see ManagedActive).
 func (a *App) activeView() (*managedView, error) {
 	l, err := a.loadAll()
 	if err != nil {
@@ -33,8 +35,8 @@ func (a *App) activeView() (*managedView, error) {
 	return a.viewOf(l), nil
 }
 
-// viewOf returns the managed view of an already loaded configuration, or nil in
-// legacy mode. activeView and Snapshot decide the mode through it.
+// viewOf returns the managed view of an already loaded configuration, or nil
+// when it is not set up. activeView and Snapshot decide it through this.
 func (a *App) viewOf(l *config.Loaded) *managedView {
 	f, ok := l.Lookup(a.ManagedPath())
 	if !ok || f.Conditional {
@@ -46,59 +48,77 @@ func (a *App) viewOf(l *config.Loaded) *managedView {
 // managedHost returns the block of the managed file that defines name.
 func (v *managedView) managedHost(name string) (domain.Host, bool) {
 	for _, h := range v.l.Hosts {
-		if hostKey(h) == name && h.SourceFile == v.file.Path {
+		if h.Name == name && singleName(h) && h.SourceFile == v.file.Path {
 			return h, true
 		}
 	}
 	return domain.Host{}, false
 }
 
-// hostKey is the name a user types for h: the one pattern of its Host line
-// (`Host web-1 # prod` is web-1), else the line's argument text.
-func hostKey(h domain.Host) string {
-	if p := h.PatternList(); len(p) == 1 {
-		return p[0]
-	}
-	return h.Name
-}
+// singleName reports whether h's Host line has at most one pattern, so that
+// its Name is the one name a user types for it (a line without any pattern
+// counts: its Name is its argument text).
+func singleName(h domain.Host) bool { return len(h.PatternList()) <= 1 }
 
 // has reports whether any loaded file defines a host block named name.
 func (v *managedView) has(name string) bool {
 	for _, h := range v.l.Hosts {
-		if hostKey(h) == name {
+		if h.Name == name {
 			return true
 		}
 	}
 	return false
 }
 
-// unmanaged returns an *UnmanagedHostError when name is defined somewhere but
-// not in the managed file (R4). A name that is defined in the managed file or
+// unmanaged returns the refusal of a write addressed by name that is not a
+// plain edit of a managed-file block: *UnmanagedHostError when a single-pattern
+// block of that name is defined outside the managed file (R4), else
+// *MultiPatternError when name is one pattern of a multi-pattern Host line, or
+// that line's whole text (M1). A single-pattern block of that name always wins
+// over a multi-pattern line (M2). A name that is defined in the managed file or
 // nowhere returns nil; callers report "not found" themselves.
 func (v *managedView) unmanaged(name string) error {
 	if _, ok := v.managedHost(name); ok {
 		return nil
 	}
 	for _, h := range v.l.Hosts {
-		if hostKey(h) == name {
+		if h.Name == name && singleName(h) {
 			return &UnmanagedHostError{Host: name, File: h.SourceFile, CanImport: h.SourceFile == v.l.MainPath()}
+		}
+	}
+	return multiPatternOf(v.l.Hosts, name)
+}
+
+// multiPatternOf returns the *MultiPatternError for the first multi-pattern
+// Host line of hosts that name addresses (one of its patterns or its whole
+// text), nil when there is none.
+func multiPatternOf(hosts []domain.Host, name string) error {
+	for _, h := range hosts {
+		if singleName(h) {
+			continue
+		}
+		if h.Name == name || slices.Contains(h.PatternList(), name) {
+			return &MultiPatternError{Host: h.Name, File: h.SourceFile, Line: h.LineStart}
 		}
 	}
 	return nil
 }
 
-// guardWrite is the write guard of a method that works in both modes: managed
-// mode refuses hosts outside the managed file, legacy mode hosts in included
-// files.
-func (a *App) guardWrite(host string) error {
+// gate is the first step of every method that writes an ssh config (P7 G1-G4):
+// it returns the managed view, or ErrNotSetUp when the main file has no
+// unconditional Include of the managed file or does not exist. Any other error
+// of reading the configuration is returned as it is. It writes nothing.
+func (a *App) gate() (*managedView, error) {
 	v, err := a.activeView()
-	if err != nil {
-		return err
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, ErrNotSetUp
+	case err != nil:
+		return nil, err
+	case v == nil:
+		return nil, ErrNotSetUp
 	}
-	if v != nil {
-		return v.unmanaged(host)
-	}
-	return a.ensureInMain(host)
+	return v, nil
 }
 
 // readManagedDoc reads the managed file as a Doc (a symlink is followed).
@@ -388,7 +408,7 @@ func (v *managedView) groupOutsideManaged(group string, disabledOnly bool) []*Un
 		if h.Group != group || h.IsWildcard() || h.SourceFile == v.file.Path || (disabledOnly && !h.Disabled) {
 			continue
 		}
-		out = append(out, &UnmanagedHostError{Host: hostKey(h), File: h.SourceFile, CanImport: h.SourceFile == v.l.MainPath()})
+		out = append(out, &UnmanagedHostError{Host: h.Name, File: h.SourceFile, CanImport: h.SourceFile == v.l.MainPath()})
 	}
 	return out
 }
@@ -413,7 +433,7 @@ func (a *App) disableGroupManaged(v *managedView, group string) error {
 	var targets []string
 	for _, h := range v.l.Hosts {
 		if h.Group == group && !h.Disabled && !h.IsWildcard() && h.SourceFile == v.file.Path {
-			targets = append(targets, hostKey(h))
+			targets = append(targets, h.Name)
 		}
 	}
 	statePath := a.groupStatePath()
@@ -460,7 +480,7 @@ func (a *App) enableGroupManaged(v *managedView, group string) error {
 	var names []string
 	for _, h := range v.l.Hosts {
 		if h.Group == group && h.Disabled && !h.IsWildcard() && h.SourceFile == v.file.Path {
-			names = append(names, hostKey(h))
+			names = append(names, h.Name)
 		}
 	}
 	statePath := a.groupStatePath()

@@ -47,7 +47,6 @@ are not supported.`,
 					return err
 				}
 				fmt.Printf("Cleared forwards for host %s\n", host)
-				printHint(a)
 				return nil
 			}
 
@@ -66,9 +65,7 @@ are not supported.`,
 				kind = domain.ForwardDynamic
 			}
 
-			// ssh replaces this process after a successful --save, so the setup
-			// hint (R14) is printed between the save and the exec.
-			return a.RunForwardNotify(host, kind, specs, save, func() { printHint(a) })
+			return a.RunForward(host, kind, specs, save)
 		},
 	}
 

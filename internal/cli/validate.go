@@ -7,8 +7,6 @@ import (
 
 	"github.com/adamdvorsky/ssh-tools/internal/domain"
 	"github.com/spf13/cobra"
-
-	"github.com/adamdvorsky/ssh-tools/internal/app"
 )
 
 func newValidateCmd() *cobra.Command {
@@ -80,15 +78,6 @@ func newGroupsCmd() *cobra.Command {
 	return cmd
 }
 
-// groupBlocksPath is the file whose host blocks a group disable/enable moves:
-// the managed file in managed mode, the main config in legacy mode.
-func groupBlocksPath(a *app.App) string {
-	if active, err := a.ManagedActive(); err == nil && active {
-		return a.ManagedPath()
-	}
-	return a.ConfigPath()
-}
-
 func newGroupsDisableCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "disable <group>",
@@ -105,8 +94,7 @@ e.g. production deployments.`,
 			if err := a.DisableGroup(args[0]); err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "group %q disabled — blocks commented out of %s\n", args[0], groupBlocksPath(a))
-			printHint(a)
+			fmt.Fprintf(os.Stderr, "group %q disabled — blocks commented out of %s\n", args[0], a.ManagedPath())
 			return nil
 		},
 	}
@@ -127,8 +115,7 @@ removed from the sidecar state file.`,
 			if err := a.EnableGroup(args[0]); err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "group %q enabled — blocks restored in %s\n", args[0], groupBlocksPath(a))
-			printHint(a)
+			fmt.Fprintf(os.Stderr, "group %q enabled — blocks restored in %s\n", args[0], a.ManagedPath())
 			return nil
 		},
 	}
@@ -138,17 +125,28 @@ removed from the sidecar state file.`,
 func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Generate or repair the Host * defaults block",
-		Long: `Generate or repair the hardened Host * defaults block (keepalive,
+		Short: "Generate the Host * defaults block (sets up a fresh machine first)",
+		Long: `Generate the hardened Host * defaults block (keepalive,
 StrictHostKeyChecking accept-new, modern KEX/ciphers/MACs).
 
-A new block is appended as the LAST host block of the config: ssh uses the
-first value found for each option, so a catch-all Host * only supplies
-defaults when it comes after your specific hosts. An existing Host * block is
-replaced in place and not moved; if other hosts follow it, a note is printed
-because its values then override theirs.`,
+On a machine without an ssh config, init does what 'sshm setup' does (an empty
+managed file, included from a new ssh config) and stops there; run it again to
+add the block. On a config that is set up, a new block is appended as the LAST
+host block of the main file: ssh uses the first value found for each option, so
+a catch-all Host * only supplies defaults when it comes after your specific
+hosts. An existing Host * block is never rewritten; a note says where it is.
+An ssh config that exists but is not set up is refused: run 'sshm setup'.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a := newApp()
+			res, fresh, err := a.InitFresh()
+			if err != nil {
+				return err
+			}
+			if fresh {
+				printSetupResult(res, "")
+				fmt.Fprintf(os.Stderr, "created an empty %s; run 'sshm init' again to add the default Host * block\n", a.ManagedPath())
+				return nil
+			}
 			written, note, err := a.InitDefaultsReport()
 			if err != nil {
 				return err
@@ -158,7 +156,6 @@ because its values then override theirs.`,
 			}
 			if written {
 				fmt.Fprintf(os.Stderr, "Host * defaults block written to %s\n", a.ConfigPath())
-				printHint(a)
 			}
 			return nil
 		},

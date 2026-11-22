@@ -243,9 +243,8 @@ func docRecs(d *Doc) []hostRec {
 	return out
 }
 
-// parseRecs is docRecs for the legacy parser. Host.Name is the raw argument
-// text (the legacy writer needs it); the names to compare are Host.Patterns,
-// which Parse always sets.
+// parseRecs is docRecs for the parser. The names to compare are Host.Patterns
+// (Host.Name joins them), which Parse always sets.
 func parseRecs(cfg *ConfigFile) ([]hostRec, error) {
 	var out []hostRec
 	for _, h := range cfg.Hosts {
@@ -319,9 +318,6 @@ func runDocProperty(t *testing.T, seed int64, checkCounts bool) {
 	listKeys := []string{"IdentityFile", "LocalForward", "CertificateFile", "RemoteForward"}
 	vals := []string{"v1", "10.9.8.7", "~/.ssh/new", "9000 h:9", "no"}
 	var counts = map[string]int{}
-	// The legacy writer against the real ssh (P2d): see legacySSH.
-	lssh := newLegacySSH(t)
-
 	for iter := 0; iter < 200; iter++ {
 		text, plain := genDoc(r)
 		d := ParseDoc([]byte(text))
@@ -331,29 +327,11 @@ func runDocProperty(t *testing.T, seed int64, checkCounts bool) {
 		if err := docVsParse(d); err != nil {
 			t.Fatalf("iter %d, generated document:\n%s\n%v", iter, text, err)
 		}
-		// Legacy path (P2c, review R1): the lossy writer may drop comments
-		// but must never lose, add or rewrite a Host line.
-		if err := legacyWriteKeepsHostLines(text); err != nil {
-			t.Fatalf("iter %d, generated document:\n%s\nlegacy Write(Parse()): %v", iter, text, err)
-		}
-		// ...and, for every document ssh accepts, must not change what any
-		// name resolves to: an option that is dropped, or moved out of its
-		// block, shows in `ssh -G` although every Host line is in place.
-		if err := lssh.check(text); err != nil {
-			t.Fatalf("iter %d, generated document: %v", iter, err)
-		}
 
 		for step := 0; step < 8; step++ {
 			if step > 0 {
 				if err := docVsParse(d); err != nil {
 					t.Fatalf("iter %d before step %d:\n%s\n%v", iter, step, strings.Join(d.Lines, "\n"), err)
-				}
-				// The legacy check again on what the operations made of the
-				// document (every second step: Parse is slow, see its buffer).
-				if step%2 == 0 {
-					if err := legacyWriteKeepsHostLines(string(d.Bytes())); err != nil {
-						t.Fatalf("iter %d before step %d:\n%s\nlegacy Write(Parse()): %v", iter, step, strings.Join(d.Lines, "\n"), err)
-					}
 				}
 			}
 			beforeLines := append([]string(nil), d.Lines...)
@@ -438,14 +416,6 @@ func runDocProperty(t *testing.T, seed int64, checkCounts bool) {
 				// The parser must see the disabled state exactly like the Doc.
 				if err := docVsParse(d); err != nil {
 					t.Fatalf("iter %d step %d %s, after DisableBlocks:\n%s\n%v", iter, step, desc, strings.Join(d.Lines, "\n"), err)
-				}
-				// And the legacy writer must keep every Host line of the
-				// layouts DisableBlocks produces (regions right below a block).
-				if err := legacyWriteKeepsHostLines(string(d.Bytes())); err != nil {
-					t.Fatalf("iter %d step %d %s, after DisableBlocks:\n%s\nlegacy Write(Parse()): %v", iter, step, desc, strings.Join(d.Lines, "\n"), err)
-				}
-				if err := lssh.check(string(d.Bytes())); err != nil {
-					t.Fatalf("iter %d step %d %s, after DisableBlocks: %v", iter, step, desc, err)
 				}
 				// Untargeted blocks identical, targeted ones now disabled regions.
 				mid := d.Blocks()
@@ -694,23 +664,6 @@ func runDocProperty(t *testing.T, seed int64, checkCounts bool) {
 		}
 		if err := docVsParse(d); err != nil {
 			t.Fatalf("iter %d after the last step:\n%s\n%v", iter, strings.Join(d.Lines, "\n"), err)
-		}
-		// The legacy writer once more, on what the operations left behind.
-		if err := lssh.check(string(d.Bytes())); err != nil {
-			t.Fatalf("iter %d after the last step: %v", iter, err)
-		}
-	}
-
-	// With ssh installed the legacy comparison must have had documents to
-	// compare; most random documents hold a value ssh rejects ("Port alice").
-	if lssh.dir != "" {
-		t.Logf("legacy Write(Parse()) against ssh: %d documents compared, %d known-lossy, %d rejected by ssh", lssh.checked, lssh.lossy, lssh.refuse)
-		need := 10
-		if checkCounts {
-			need = 40
-		}
-		if lssh.checked < need {
-			t.Errorf("only %d documents were compared with ssh (want at least %d): the legacy property proves too little", lssh.checked, need)
 		}
 	}
 

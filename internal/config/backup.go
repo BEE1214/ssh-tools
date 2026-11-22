@@ -10,26 +10,6 @@ import (
 	"time"
 )
 
-// Backup copies the config file to a timestamped .bak file in the same directory.
-// Returns the path to the backup file.
-func Backup(path string) (string, error) {
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read config: %w", err)
-	}
-
-	dir := filepath.Dir(path)
-	base := filepath.Base(path)
-	stamp := time.Now().Format("20060102-150405")
-	bakPath := filepath.Join(dir, base+".bak."+stamp)
-
-	if err := os.WriteFile(bakPath, src, 0o600); err != nil {
-		return "", fmt.Errorf("write backup: %w", err)
-	}
-
-	return bakPath, nil
-}
-
 // MaxBackups is how many backups BackupTo keeps per file name in a backup
 // directory. Every managed-file save makes one, so without a limit the
 // directory grows forever; 20 covers a long editing session and is small
@@ -60,8 +40,33 @@ func BackupTo(path, dir string) (string, error) {
 // of the exact form "<base>.<timestamp>[-n]" are touched, so "config.old.x"
 // is never counted as a backup of "config".
 func PruneBackups(dir, base string, keep int) []string {
+	if keep < 0 {
+		return nil
+	}
+	baks := listBackups(dir, base)
+	var removed []string
+	for i := keep; i < len(baks); i++ {
+		if os.Remove(baks[i]) == nil {
+			removed = append(removed, baks[i])
+		}
+	}
+	return removed
+}
+
+// NewestBackup returns the path of the newest backup BackupTo made for the file
+// name base in dir, and false when there is none.
+func NewestBackup(dir, base string) (string, bool) {
+	if baks := listBackups(dir, base); len(baks) > 0 {
+		return baks[0], true
+	}
+	return "", false
+}
+
+// listBackups returns the paths of the backups of the file name base in dir
+// (names of the exact form "<base>.<timestamp>[-n]"), newest first.
+func listBackups(dir, base string) []string {
 	ents, err := os.ReadDir(dir)
-	if err != nil || keep < 0 {
+	if err != nil {
 		return nil
 	}
 	type bak struct {
@@ -84,14 +89,11 @@ func PruneBackups(dir, base string, keep int) []string {
 		}
 		return baks[i].n > baks[j].n
 	})
-	var removed []string
-	for i := keep; i < len(baks); i++ {
-		p := filepath.Join(dir, baks[i].name)
-		if os.Remove(p) == nil {
-			removed = append(removed, p)
-		}
+	out := make([]string, len(baks))
+	for i, b := range baks {
+		out[i] = filepath.Join(dir, b.name)
 	}
-	return removed
+	return out
 }
 
 func backupTo(path, dir string) (string, error) {

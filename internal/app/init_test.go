@@ -10,10 +10,26 @@ import (
 	"github.com/adamdvorsky/ssh-tools/internal/config"
 )
 
+// initEnv writes content as the main file of a config that is not set up.
 func initEnv(t *testing.T, content string) (*App, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config")
 	writeTemp(t, path, content)
+	return NewAppWithPath(path), path
+}
+
+// initSetUpEnv builds a set-up config (init needs one): the main file is the
+// Include line of an empty managed file, a blank line and content.
+func initSetUpEnv(t *testing.T, content string) (*App, string) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config")
+	managed := filepath.Join(dir, "config.d", "sshm.conf")
+	if err := os.Mkdir(filepath.Dir(managed), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTemp(t, managed, mgManagedHeader)
+	writeTemp(t, path, "Include "+managed+"\n\n"+content)
 	return NewAppWithPath(path), path
 }
 
@@ -39,7 +55,7 @@ func hostNames(cfg *config.ConfigFile) []string {
 }
 
 func TestInitDefaults_EmptyConfig(t *testing.T) {
-	a, path := initEnv(t, "")
+	a, path := initSetUpEnv(t, "")
 	note, err := a.InitDefaults()
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +73,7 @@ func TestInitDefaults_EmptyConfig(t *testing.T) {
 }
 
 func TestInitDefaults_AppendsAfterHosts(t *testing.T) {
-	a, path := initEnv(t, "Host web1\n  HostName 10.0.0.1\n  User alice\n  StrictHostKeyChecking yes\n\nHost db1\n  HostName 10.0.0.2\n  User bob\n")
+	a, path := initSetUpEnv(t, "Host web1\n  HostName 10.0.0.1\n  User alice\n  StrictHostKeyChecking yes\n\nHost db1\n  HostName 10.0.0.2\n  User bob\n")
 	note, err := a.InitDefaults()
 	if err != nil {
 		t.Fatal(err)
@@ -78,38 +94,35 @@ func TestInitDefaults_AppendsAfterHosts(t *testing.T) {
 	}
 }
 
-func TestInitDefaults_ExistingWildcardUpdatedInPlace(t *testing.T) {
-	// Host * deliberately first: it must stay where it is, be rewritten with the
-	// defaults, and the user gets a note.
-	a, path := initEnv(t, "Host *\n  ServerAliveInterval 5\n\nHost web1\n  HostName 10.0.0.1\n")
-	note, err := a.InitDefaults()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(note, "Host * is at line 1, before other hosts") || !strings.Contains(note, "Move it to the end") {
-		t.Errorf("note = %q", note)
-	}
-	cfg := parseFile(t, path)
-	got := hostNames(cfg)
-	if len(got) != 2 || got[0] != "*" || got[1] != "web1" {
-		t.Fatalf("host order = %v, want [* web1]", got)
-	}
-	if cfg.Hosts[0].StrictHostKeyChecking != "accept-new" || cfg.Hosts[0].Extra["ServerAliveInterval"] != "60" {
-		t.Errorf("Host * not repaired: %+v", cfg.Hosts[0])
-	}
-}
-
-func TestInitDefaults_ExistingWildcardLastNoNote(t *testing.T) {
-	a, path := initEnv(t, "Host web1\n  HostName 10.0.0.1\n\nHost *\n  ServerAliveInterval 5\n")
-	note, err := a.InitDefaults()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if note != "" {
-		t.Errorf("unexpected note %q", note)
-	}
-	if got := hostNames(parseFile(t, path)); len(got) != 2 || got[1] != "*" {
-		t.Errorf("host order = %v", got)
+// An existing Host * is never rewritten or moved, wherever it stands; the note
+// says where it is and nothing is written.
+func TestInitDefaults_ExistingWildcardIsLeftAlone(t *testing.T) {
+	for name, content := range map[string]string{
+		"first":  "Host *\n  ServerAliveInterval 5\n\nHost web1\n  HostName 10.0.0.1\n",
+		"last":   "Host web1\n  HostName 10.0.0.1\n\nHost *\n  ServerAliveInterval 5\n",
+		"middle": "Host web1\n  HostName 10.0.0.1\n\nHost *\n  ServerAliveInterval 5\n\nHost db1\n  HostName 10.0.0.2\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, path := initSetUpEnv(t, content)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			written, note, err := a.InitDefaultsReport()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if written || !strings.Contains(note, "Host * is already defined at "+path+":") || !strings.Contains(note, "sshm does not rewrite it") {
+				t.Errorf("written = %v, note = %q", written, note)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Errorf("the main file changed:\n%s", after)
+			}
+		})
 	}
 }
 
@@ -117,7 +130,7 @@ func TestInitDefaults_RealSSH(t *testing.T) {
 	if _, err := exec.LookPath("ssh"); err != nil {
 		t.Skip("ssh not in PATH")
 	}
-	a, path := initEnv(t, "Host strict\n  HostName 10.0.0.1\n  StrictHostKeyChecking yes\n\nHost plain\n  HostName 10.0.0.2\n")
+	a, path := initSetUpEnv(t, "Host strict\n  HostName 10.0.0.1\n  StrictHostKeyChecking yes\n\nHost plain\n  HostName 10.0.0.2\n")
 	if _, err := a.InitDefaults(); err != nil {
 		t.Fatal(err)
 	}

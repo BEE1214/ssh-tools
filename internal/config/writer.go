@@ -7,104 +7,13 @@ import (
 	"github.com/adamdvorsky/ssh-tools/internal/domain"
 )
 
-// Write serializes a ConfigFile back to bytes.
-//
-// In full-write mode (used after `sshm init` or bulk operations),
-// it produces canonical formatting:
-//   - 2-space indent for options
-//   - Canonical key casing (HostName, User, Port, etc.)
-//   - One blank line between host blocks
-//
-// DevPod blocks are written with their marker comments and are not reformatted.
-//
-// Known losses (not fixed here; the managed file is edited through Doc):
-//   - a repeated Include or Match line inside one host block is lost: both
-//     are stored like options (Host.Extra), and only the first is kept;
-//   - text the parser found outside a host block is written at the top of
-//     the file. That includes an option line below a blank line of a block
-//     (for ssh still part of that block: it becomes a global option) and
-//     every Match block;
-//   - options come out in a fixed order. ssh takes whichever of ProxyJump
-//     and ProxyCommand stands first in a block; a block that has
-//     ProxyCommand first comes back with ProxyJump first.
-func Write(cfg *ConfigFile) ([]byte, error) {
-	var buf strings.Builder
-
-	// Refuse values that would break out of their config line and inject
-	// extra directives.
-	for _, h := range cfg.Hosts {
-		if err := checkLineBreaks(h); err != nil {
-			return nil, err
-		}
-	}
-
-	// Write leading comments (before any host block).
-	for _, c := range cfg.Comments {
-		buf.WriteString(c.Text)
-		buf.WriteString("\n")
-	}
-
-	for i, h := range cfg.Hosts {
-		if !h.Disabled && !h.IsWildcard() {
-			// Re-emit explicit "# group:" comments (non-redundant only) so
-			// group assignments survive write cycles.
-			if comment := groupCommentFor(h); comment != "" {
-				buf.WriteString(comment)
-			}
-		}
-		if h.Disabled {
-			// Open a marker pair once per contiguous run of same-group
-			// disabled hosts (the parser emits them in file order, so a
-			// group's hosts are consecutive).
-			if i == 0 || !cfg.Hosts[i-1].Disabled || cfg.Hosts[i-1].Group != h.Group {
-				fmt.Fprintf(&buf, "%s\n", domain.DisabledMarkerStart(h.Group))
-			}
-			if h.RawBlock != "" {
-				// Write the block COMMENTED OUT: raw ssh must not resolve
-				// disabled hosts. Enable strips the comment prefix.
-				for _, l := range strings.Split(h.RawBlock, "\n") {
-					buf.WriteString(commentOutLine(l))
-					buf.WriteString("\n")
-				}
-			} else {
-				writeHostBlock(&buf, h)
-			}
-			// Close the marker pair when the next host differs or ends.
-			if i == len(cfg.Hosts)-1 || !cfg.Hosts[i+1].Disabled || cfg.Hosts[i+1].Group != h.Group {
-				fmt.Fprintf(&buf, "%s\n", domain.DisabledMarkerEnd(h.Group))
-			}
-		} else if h.Source == domain.SourceDevPod {
-			writeDevPodBlock(&buf, h)
-		} else {
-			writeHostBlock(&buf, h)
-		}
-
-		// Add blank line between blocks (but not after the last one).
-		// Inside a contiguous disabled run the RawBlocks already carry the
-		// original spacing — an extra blank line would be absorbed into the
-		// previous RawBlock on re-parse and grow the file every cycle.
-		if i < len(cfg.Hosts)-1 &&
-			!(h.Disabled && cfg.Hosts[i+1].Disabled && cfg.Hosts[i+1].Group == h.Group) {
-			buf.WriteString("\n")
-		}
-	}
-
-	// Ensure file ends with newline.
-	result := buf.String()
-	if !strings.HasSuffix(result, "\n") {
-		result += "\n"
-	}
-
-	return []byte(result), nil
-}
+// What is left of the writer after P7: the canonical text of one new host
+// block, which Doc.AppendBlock and the Host * block of `sshm init` use (see
+// BlockLines). The main file is never re-serialized.
 
 // checkLineBreaks returns an error if any value the writer would emit for h
-// contains a CR or LF. A disabled host with a verbatim RawBlock is written
-// from that block, not from its fields, so its fields are not checked.
+// contains a CR or LF.
 func checkLineBreaks(h domain.Host) error {
-	if h.Disabled && h.RawBlock != "" {
-		return nil
-	}
 	values := []string{
 		h.Name, h.Group, h.HostName, h.User, h.Port, h.IdentityFile, h.CertificateFile,
 		h.ProxyJump, h.ProxyCommand, h.ForwardAgent, h.ForwardX11,
@@ -197,33 +106,9 @@ func writeHostBlock(buf *strings.Builder, h domain.Host) {
 	}
 }
 
-// writeDevPodBlock writes a DevPod-managed host block with markers.
-func writeDevPodBlock(buf *strings.Builder, h domain.Host) {
-	fmt.Fprintf(buf, "# DevPod Start %s\n", h.Name)
-	writeHostBlock(buf, h)
-	fmt.Fprintf(buf, "# DevPod End %s\n", h.Name)
-}
-
-// writeDisabledBlock re-emits a disabled host block between its group's
-// markers. If the host carries a verbatim RawBlock (normal case — the parser
-// fills it), it is written byte-for-byte; otherwise the block is regenerated
-// in canonical form. Host blocks that had an explicit "# group:" comment
-// before being disabled get it re-emitted so the group survives an
-// enable/disable cycle.
-func writeDisabledBlock(buf *strings.Builder, h domain.Host) {
-	fmt.Fprintf(buf, "%s\n", domain.DisabledMarkerStart(h.Group))
-	if h.RawBlock != "" {
-		buf.WriteString(h.RawBlock)
-		buf.WriteString("\n")
-	} else {
-		writeHostBlock(buf, h)
-	}
-	fmt.Fprintf(buf, "%s\n", domain.DisabledMarkerEnd(h.Group))
-}
-
-// groupCommentFor returns the "# group: <name>" comment line to re-emit
-// above a host block, or "" when the group equals the prefix heuristic
-// (GroupFor) — in that case the comment is redundant and omitted.
+// groupCommentFor returns the "# group: <name>" comment line to put above a
+// host block, or "" when the group equals the prefix heuristic (GroupFor) — in
+// that case the comment is redundant and omitted.
 func groupCommentFor(h domain.Host) string {
 	if h.Disabled || h.Group == "" || h.Group == domain.GroupFor(h.Name) {
 		return ""

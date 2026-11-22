@@ -229,12 +229,15 @@ func TestImportCmd_DryRunPrintsThePlan(t *testing.T) {
 }
 
 func TestImportCmd_DryRunShowsGroupOfDisabledBlocksOnly(t *testing.T) {
-	e := newCLIEnv(t, "Host web-1\n  HostName 10.0.0.1\n\nHost deploy-acq\n  HostName 192.168.1.10\n\nHost deploy-eu\n  HostName 192.168.1.11\n\nHost misc\n  HostName 10.0.0.9\n", cliAbsent)
-	if _, stderr, err := runCLI(t, "groups", "disable", "deploy"); err != nil {
-		t.Fatalf("groups disable (legacy mode) failed: %v\n%s", err, stderr)
-	}
-	e.write(t, e.main, "Include @M@\n"+e.readMain(t))
-	e.write(t, e.managed, cliManagedHeader)
+	// The group was disabled in the main file by an earlier sshm: its blocks sit
+	// commented out between one pair of markers.
+	e := newCLIEnv(t, "Include @M@\n"+
+		"Host web-1\n  HostName 10.0.0.1\n\n"+
+		"# sshm disabled group=deploy start\n"+
+		"# Host deploy-acq\n#   HostName 192.168.1.10\n\n"+
+		"# Host deploy-eu\n#   HostName 192.168.1.11\n"+
+		"# sshm disabled group=deploy end\n\n"+
+		"Host misc\n  HostName 10.0.0.9\n", cliManagedHeader)
 	before := cliSnap(t, e.dir)
 	stdout, _, err := runCLI(t, "import")
 	if err != nil {
@@ -478,34 +481,6 @@ func cliHintArgs(t *testing.T, e *cliEnv) [][]string {
 		cmds = append(cmds, []string{"cert", "sign", "cert-1", "--ca-key", filepath.Join(keys, "ca"), "--validity", "+1h"})
 	}
 	return cmds
-}
-
-func TestWriteCommands_LegacyModePrintsTheSetupHintOnce(t *testing.T) {
-	e := newCLIEnv(t, cliHintHosts, cliAbsent)
-	hint := "hint: run 'sshm setup' to keep sshm-managed hosts in " + e.managed
-	for _, args := range cliHintArgs(t, e) {
-		_, stderr, err := runCLI(t, args...)
-		if err != nil {
-			t.Fatalf("sshm %s failed: %v\n%s", strings.Join(args, " "), err, stderr)
-		}
-		lines := cliLines(stderr)
-		last := ""
-		if len(lines) > 0 {
-			last = lines[len(lines)-1]
-		}
-		if n := strings.Count(stderr, "hint:"); n != 1 || last != hint {
-			t.Errorf("sshm %s: want exactly one hint as the last stderr line, got %d (last line %q):\n%s",
-				strings.Join(args, " "), n, last, stderr)
-		}
-	}
-	// A failed command prints no hint.
-	_, stderr, err := runCLI(t, "edit", "no-such-host", "--user", "x")
-	if err == nil {
-		t.Fatal("edit of a missing host succeeded")
-	}
-	if strings.Contains(stderr, "hint:") {
-		t.Errorf("hint printed after a failure:\n%s", stderr)
-	}
 }
 
 func TestWriteCommands_ManagedModeWritesToTheManagedFileWithoutAHint(t *testing.T) {

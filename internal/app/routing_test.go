@@ -140,92 +140,7 @@ func TestFixedErrorStrings(t *testing.T) {
 
 // ---- R1: legacy mode ------------------------------------------------------------
 
-// Characterization: legacy mode already behaves this way. A managed file that
-// exists but is not included must not attract any write.
-func TestLegacyMode_WritesStayInTheMainFile(t *testing.T) {
-	t.Parallel()
-	const stray = mgManagedHeader + "Host stray-1\n  HostName 10.0.0.80\n"
-	e := newMgEnv(t, groupFixture, stray)
-	if active, err := e.a.ManagedActive(); err == nil && active {
-		t.Fatal("ManagedActive = true for a main file without an Include")
-	}
-	managedBefore := e.snap(t)[e.managed]
-
-	userOf := func(name string) string {
-		hs, err := e.a.ListHosts("", true)
-		mgRequireNoErr(t, err)
-		for _, h := range hs {
-			if h.Name == name {
-				return h.User
-			}
-		}
-		return "<missing>"
-	}
-	mgRequireNoErr(t, e.a.AddHost(domain.Host{Name: "new-1", HostName: "10.0.0.50", User: "newuser"}))
-	if !strings.Contains(e.readMain(t), "Host new-1") {
-		t.Errorf("AddHost did not write to the main file:\n%s", e.readMain(t))
-	}
-	mgRequireNoErr(t, e.a.EditHost("web-1", map[string]string{"user": "zed"}))
-	if got := userOf("web-1"); got != "zed" {
-		t.Errorf("EditHost: user = %q", got)
-	}
-	mgRequireNoErr(t, e.a.DuplicateHost("web-1", "web-3"))
-	if got := userOf("web-3"); got != "zed" {
-		t.Errorf("DuplicateHost: user of web-3 = %q", got)
-	}
-	mgRequireNoErr(t, e.a.DeleteHost("misc"))
-	if strings.Contains(e.readMain(t), "Host misc") {
-		t.Error("DeleteHost left the block in the main file")
-	}
-	mgRequireNoErr(t, e.a.AddForward("web-1", domain.ForwardLocal, []string{"8080:localhost:80"}))
-	if !strings.Contains(e.readMain(t), "LocalForward") {
-		t.Error("AddForward did not write the forward to the main file")
-	}
-	mgRequireNoErr(t, e.a.ClearForwards("web-1"))
-	if strings.Contains(e.readMain(t), "LocalForward") {
-		t.Error("ClearForwards left the forward in the main file")
-	}
-	mgRequireNoErr(t, e.a.DisableGroup("deploy"))
-	if !strings.Contains(e.readMain(t), domain.DisabledMarkerStart("deploy")) {
-		t.Error("DisableGroup did not write markers to the main file")
-	}
-	mgRequireNoErr(t, e.a.EnableGroup("deploy"))
-	if strings.Contains(e.readMain(t), domain.DisabledMarkerStart("deploy")) {
-		t.Error("EnableGroup left the markers in the main file")
-	}
-	_, err := e.a.InitDefaults()
-	mgRequireNoErr(t, err)
-	if !strings.Contains(e.readMain(t), "Host *") {
-		t.Error("InitDefaults did not add Host * to the main file")
-	}
-	if after := e.snap(t)[e.managed]; after != managedBefore {
-		t.Error("the not-included managed file was touched in legacy mode")
-	}
-	if mgExists(mgSidecar(e.managed)) {
-		t.Error("a managed-mode sidecar was created in legacy mode")
-	}
-}
-
 // ---- R14: hint -------------------------------------------------------------------
-
-func TestSetupHint(t *testing.T) {
-	t.Parallel()
-	t.Run("legacy mode", func(t *testing.T) {
-		t.Parallel()
-		e := newMgEnv(t, sxMain, mgAbsent)
-		want := "hint: run 'sshm setup' to keep sshm-managed hosts in " + e.managed
-		if got := e.a.SetupHint(); got != want {
-			t.Errorf("SetupHint = %q, want %q", got, want)
-		}
-	})
-	t.Run("managed mode", func(t *testing.T) {
-		t.Parallel()
-		e := newRtEnv(t)
-		if got := e.a.SetupHint(); got != "" {
-			t.Errorf("SetupHint = %q, want empty in managed mode", got)
-		}
-	})
-}
 
 // ---- R2: add -----------------------------------------------------------------------
 
@@ -969,9 +884,10 @@ func TestInit_ManagedModeAppendsHostStarToTheMainFileOnlyWhenNoneExists(t *testi
 		t.Errorf("main-1 resolves differently after init:\n%s", out)
 	}
 
-	// Same algorithm filtering as in legacy mode: the option lines of Host * match.
-	legacy := newMgEnv(t, strings.TrimPrefix(mainNoStar, "Include @M@\n\n"), mgAbsent)
-	_, lerr := legacy.a.InitDefaults()
+	// The option lines of Host * do not depend on the hosts of the config: a
+	// second set-up config gets the same ones.
+	other := newMgEnv(t, "Include @M@\n\nHost other-1\n  HostName 10.0.0.1\n", rtManaged)
+	_, lerr := other.a.InitDefaults()
 	mgRequireNoErr(t, lerr)
 	starOptions := func(text string) []string {
 		var out []string
@@ -988,8 +904,8 @@ func TestInit_ManagedModeAppendsHostStarToTheMainFileOnlyWhenNoneExists(t *testi
 		sort.Strings(out)
 		return out
 	}
-	if got, want := starOptions(gotMain), starOptions(legacy.readMain(t)); len(want) == 0 || !reflect.DeepEqual(got, want) {
-		t.Errorf("Host * options differ from legacy init:\nmanaged: %q\nlegacy:  %q", got, want)
+	if got, want := starOptions(gotMain), starOptions(other.readMain(t)); len(want) == 0 || !reflect.DeepEqual(got, want) {
+		t.Errorf("Host * options differ between two configs:\nfirst:  %q\nsecond: %q", got, want)
 	}
 }
 

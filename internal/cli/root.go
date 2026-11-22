@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -69,8 +70,19 @@ ssh directly. Add -N yourself for no-shell tunnels.`,
 // Execute creates the root command and runs it.
 func Execute() {
 	if err := NewRootCmd().Execute(); err != nil {
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
+}
+
+// exitCode is 1, except after an interrupted save (its message, `interrupted:
+// <file> restored`, has been printed): then 128 plus the number of the signal,
+// as a shell reports a process killed by it.
+func exitCode(err error) int {
+	var ie *app.InterruptedError
+	if errors.As(err, &ie) && ie.Signal != 0 {
+		return 128 + int(ie.Signal)
+	}
+	return 1
 }
 
 // newApp creates an App instance, printing an error and exiting on failure.

@@ -57,12 +57,23 @@ sshm validate                # lint config, report issues
 sshm groups                  # list groups + enable/disable state
 sshm groups disable <group>  # disable a group (hard gate, see below)
 sshm groups enable <group>   # re-enable a disabled group
-sshm init                    # generate/repair Host * defaults block
+sshm init                    # fresh machine: set up sshm; set-up config: add the Host * defaults block
 sshm setup [--dry-run]       # keep sshm's hosts in ~/.ssh/config.d/sshm.conf (one Include line is added to the ssh config)
 sshm import [--apply]        # move plain Host blocks into that file (dry run unless --apply)
 ```
 
-A legacy group state file `<ssh config>.sshm-groups` is not migrated by `setup`; `import` moves it for the groups it moves. A comment directly above a `Host` line (no blank line between) moves with that host on `import`, including a file-header comment that touches the first host.
+Every command that writes an ssh config (`add`, `edit`, `forward --save`/`--clear`, `cert sign <host>`, `cert revoke` of a certificate a host references, `groups disable`/`enable`, `init`, and the editing keys of the TUI) needs the setup below. Without it they change nothing and fail with `sshm is not set up: run 'sshm setup' first`. Commands that only read (`list`, `search`, `dump`, `connect`, `copy`, `validate`, `groups`, `cert list`/`inspect`) work on any ssh config.
+
+A group state file `<ssh config>.sshm-groups` of an earlier sshm is not migrated by `setup`; `import` moves it for the groups it moves. A comment directly above a `Host` line (no blank line between) moves with that host on `import`, including a file-header comment that touches the first host.
+
+## First run
+
+sshm writes only to its own file, `~/.ssh/config.d/sshm.conf`, which your ssh config includes with one `Include` line (as line 1, so that it applies to every host). Your own file is never re-serialized.
+
+- **A machine without an ssh config:** `sshm init` creates `~/.ssh` (0700), `config.d/sshm.conf` (empty) and an ssh config that holds the `Include` line, checks with `ssh -G` that ssh accepts the result, and stops. It prints what it created; run `sshm init` again to add the default `Host *` block.
+- **An existing ssh config:** `sshm setup` adds the `Include` line and creates the managed file (`sshm setup --dry-run` shows what it would do). Then `sshm import` (dry run) and `sshm import --apply` move the plain `Host` blocks you want sshm to manage into the managed file. Hosts that stay in your file are still listed, connected to and validated; they just cannot be edited by sshm (it says where they are defined).
+
+Every write is made by changing lines of the managed file, then asking `ssh -G` for every host before and after: a change that alters anything it should not, or that ssh rejects, is rolled back. A backup of the file goes to `~/.ssh/sshm-backups/` first (the newest 20 per file are kept). SIGINT, SIGTERM or SIGHUP while a save is being verified roll it back too (`interrupted: <file> restored`), so ssh never keeps a half-checked file. If ssh already rejects your configuration, sshm refuses to write and names the newest backup of the file.
 
 ### Connect
 
@@ -82,7 +93,7 @@ A legacy group state file `<ssh config>.sshm-groups` is not migrated by `setup`;
 | `?` | Help |
 | `q`, `Esc`, `Ctrl+C` | Quit without connecting |
 
-**Editing is currently disabled in the TUI.** The config writer re-serializes the whole file (see Known limitations), so `e`/`n`/`d`/`D` only show a notice; use the CLI (`sshm edit`, `add`, `copy`). The editor code is in place and returns once the managed-config writer from `PLAN-include.md` lands. When enabled: `e` edit, `n` new, `d` duplicate, `D` delete (asks `y`/`n`).
+On a set-up config (see [First run](#first-run)) the TUI edits too: `e` edit, `n` new, `d` duplicate, `D` delete (asks `y`/`n`). On a config that is not set up the four keys only show a notice (`editing needs setup: run 'sshm setup' ...`) and change nothing. A host that sshm cannot edit (defined in your own file or an included file, or on a `Host` line with several patterns) shows the reason when you press one of them.
 
 In the editor: `Tab`/`Shift+Tab` move between fields, `Enter` on the last field or `Ctrl+S` saves, `Esc` cancels. Validation errors block the save and are shown inline; warnings (e.g. no `IdentityFile`) are shown but do not block.
 
@@ -90,7 +101,7 @@ In the editor: `Tab`/`Shift+Tab` move between fields, `Enter` on the last field 
 - DevPod hosts are tagged `[read-only]`: you can connect to them, but not edit, duplicate or delete them.
 - The host name is read-only when editing (there is no rename operation); to rename, duplicate and delete.
 - The status bar shows the number of validation warnings/errors in the config (`sshm validate` lists them).
-- All changes go through the same code path as the CLI: the file is re-read, a backup is written, and the new content is written atomically. The TUI never overwrites changes made to the file while it is open.
+- All changes go through the same code path as the CLI: the managed file is re-read, a backup is written, and the new content is verified with `ssh -G` and written atomically. The TUI never overwrites changes made to the file while it is open.
 
 ### fzf integration
 
@@ -147,32 +158,28 @@ sshm groups enable deploy      # restore the blocks byte-for-byte
 
 What disable does:
 
-- The group's host blocks are commented out of `~/.ssh/config` between
+- The group's host blocks are commented out of the managed file
+  (`~/.ssh/config.d/sshm.conf`) between
   `# sshm disabled group=<name> start/end` markers — raw `ssh <host>` no
-  longer resolves them.
-- The group is recorded in `~/.ssh/config.sshm-groups` (sidecar state).
+  longer resolves them. Every member of the group must be defined in the
+  managed file; otherwise disable is refused and says which hosts to import.
+- The group is recorded in `~/.ssh/config.d/sshm.conf.sshm-groups` (sidecar state).
 - `sshm connect <host>` and `sshm copy` refuse the group's hosts.
 - Disabled hosts are hidden from `sshm list` (use `--all`) and from shell
   completion.
 
-Enable restores the original block text exactly as it was (the parser
-remembers the verbatim bytes) and cleans up the state file. The state file
+Enable restores the original block text exactly as it was (the block is only
+commented out, never rewritten) and cleans up the state file. The state file
 is defense-in-depth: a disabled group stays disabled even if its blocks are
 removed from the config by hand.
 
 ## Config preservation
 
-The parser preserves:
-- Comments (standalone and inline)
-- Blank lines
-- DevPod blocks (`# DevPod Start/End` markers) — marked read-only
-- Original ordering
-
-The writer uses atomic writes (temp file + fsync + rename) and creates a timestamped backup before every write.
+sshm edits the managed file line by line, so everything it does not change stays byte-for-byte: comments (standalone and inline), blank lines, indentation, the casing of option names and the order of the blocks. DevPod blocks (`# DevPod Start/End` markers) are read-only. Writes are atomic (temp file + fsync + rename) and every write of an existing file is preceded by a timestamped backup in `~/.ssh/sshm-backups/`.
 
 ## Host * defaults (`sshm init`)
 
-Generates or repairs a `Host *` block. A new block is appended as the **last** host block: ssh uses the first value found for each option, so a catch-all `Host *` only supplies defaults when it comes after your specific hosts (a leading `Host *` would override every per-host value). An existing `Host *` block is updated in place, not moved; if other hosts follow it, `sshm init` prints a note on stderr saying its values override theirs and that you should move it to the end. The block contains:
+On a set-up config, adds a `Host *` block. It is appended as the **last** host block of your ssh config: ssh uses the first value found for each option, so a catch-all `Host *` only supplies defaults when it comes after your specific hosts (a leading `Host *` would override every per-host value). If any loaded file already has a `Host *` block, `sshm init` writes nothing and prints a note on stderr saying where it is: sshm does not rewrite it, edit it by hand to change the defaults. The block contains:
 
 - ServerAliveInterval 60, ServerAliveCountMax 3
 - IdentitiesOnly yes, HashKnownHosts yes
@@ -191,7 +198,7 @@ ssh-tools/
   cmd/sshm/main.go           # entry point
   internal/
     domain/                  # pure logic: Host, Group, Validate, EffectiveConfig
-    config/                  # parser, writer, backup, atomic write
+    config/                  # parser, line-based Doc editor, backup, atomic write
     app/                     # orchestration: list, add, edit, connect, validate, dump
     cli/                     # cobra commands
     tui/                     # bubbletea TUI (list + editor)
@@ -207,7 +214,11 @@ ssh-tools/
 
 ## Known limitations
 
-- **Writes normalize the whole file.** Any change made through `sshm add`, `edit`, `groups disable/enable` (or the TUI, once editing is re-enabled) re-serializes the entire config, not just the edited host: indentation becomes 2 spaces, option names get canonical casing, runs of blank lines collapse, comment lines *inside* a host block are dropped, comments between hosts are moved to the top of the file, and DevPod block options are re-ordered. A timestamped backup (`config.bak.<timestamp>`) is written next to the config before every change. Configs already in this canonical form round-trip byte-for-byte.
+- **Multi-pattern `Host` lines cannot be edited.** A block such as `Host db-1 db-2` is read and connectable, but sshm refuses to edit, duplicate or delete it (`"Host db-1 db-2" in <file> has several patterns, which sshm cannot edit`), and `import` does not move it. Split the line by hand.
+- **Some blocks stay in your own file.** DevPod blocks, `Match` blocks, `Host *` and anything in an included file are never moved or edited by sshm; hosts defined there are read-only in the TUI and refused by the write commands.
+- **Clients that do not follow `Include` do not see the managed hosts.** OpenSSH and tools that call it do; a library or tool that parses `~/.ssh/config` itself instead of asking ssh (paramiko's config parser was checked) does not read `config.d/sshm.conf` and so does not see the hosts that sshm manages.
+- **A dotfile manager that overwrites the main file drops the `Include` line.** The managed hosts then vanish from ssh and every write command fails with `sshm is not set up` until you run `sshm setup` again. Keep the `Include` line in the file the manager deploys.
+- **SIGKILL during a save cannot be handled.** SIGINT, SIGTERM and SIGHUP roll an unfinished save back; a process killed with SIGKILL (or a power cut) between the write and its verification can leave the managed file as written. sshm then refuses further writes ("the current ssh configuration is already broken") and names the newest backup in `~/.ssh/sshm-backups/`, which you can copy back.
 - The TUI cannot rename a host, edit a host's group, or edit options other than the six in the editor; use the CLI (`sshm edit --help`) or edit the file by hand.
 
 ## Development

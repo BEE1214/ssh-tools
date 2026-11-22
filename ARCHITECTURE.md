@@ -24,17 +24,17 @@
               └───────┬────────┘
                       │
               ┌───────▼────────┐
-              │  Config layer   │   parse / write / backup
+              │  Config layer   │   parse / line editor / backup
               └───────┬────────┘
                       │
-              ┌───────▼────────┐
-              │  ~/.ssh/config  │   single source of truth
-              └────────────────┘
+              ┌───────▼────────────────────────────┐
+              │  ~/.ssh/config  +  config.d/sshm.conf │   sshm writes only the second
+              └────────────────────────────────────┘
 ```
 
 Three layers, strict dependency direction downward:
 
-1. **Config layer** — file I/O, parsing, writing. Knows about SSH config syntax. Knows nothing about TUI or CLI.
+1. **Config layer** — file I/O, parsing, editing lines of a file. Knows about SSH config syntax. Knows nothing about TUI or CLI.
 2. **Domain layer** — Host struct, Group logic, validation rules, effective-config resolution. Pure Go, no I/O.
 3. **App layer** — wires CLI/TUI commands to domain+config. Handles backup, atomic writes, exec.
 
@@ -45,7 +45,9 @@ The TUI and CLI are thin presentation layers. They construct requests, call the 
 ```
 // Host is a single Host block in ssh config.
 type Host struct {
-    Name         string            // Host pattern (usually a name, can be wildcard)
+    Name         string            // what a user types: the one pattern of the Host line ("web-1" for
+                                   // `Host web-1 # prod`), several patterns joined by one space
+                                   // ("db-1 db-2"), can be a wildcard
     HostName     string            // resolved hostname/IP
     User         string
     Port         string            // keep as string, "22" default
@@ -68,32 +70,26 @@ type Host struct {
     LineEnd      int
 }
 
-// ConfigFile is the parsed representation of the entire file.
+// ConfigFile is the parsed representation of one file. It is read-only: sshm
+// never writes a file back from it (edits go through config.Doc, below).
 type ConfigFile struct {
     Hosts    []Host
-    Comments []CommentBlock       // standalone comments preserved
     Raw      []byte               // original file bytes
-}
-
-// CommentBlock preserves comments and blank lines between host blocks.
-type CommentBlock struct {
-    LineStart int
-    LineEnd    int
-    Text       string
+    Includes []IncludeDirective
 }
 ```
 
 Why `Extra map[string]string` instead of modeling every possible SSH option:
 - SSH has 100+ options. Modeling all is busywork with no payoff.
 - Options you actually use (HostName, User, Port, IdentityFile, ProxyJump, ProxyCommand, ForwardAgent, ForwardX11, StrictHostKeyChecking, LogLevel, HostKeyAlgorithms, KexAlgorithms) are first-class fields.
-- Everything else goes in Extra. The writer outputs them verbatim. This means any option works, even ones we've never seen.
+- Everything else goes in Extra. A new block is written with them verbatim and edits of a block leave lines they do not touch alone. This means any option works, even ones we've never seen.
 
 Why `Port` is string not int:
 - Default is "22" (string in ssh config). Avoids int->string conversion noise.
 - Unknown/non-numeric ports don't exist in practice but string is simpler.
 
 Why `Source` field:
-- DevPod blocks are delimited by `# DevPod Start <name>` / `# DevPod End <name>` comments. The parser sets `Source: SourceDevPod` for these. TUI shows them as read-only. Writer never reformats them.
+- DevPod blocks are delimited by `# DevPod Start <name>` / `# DevPod End <name>` comments. The parser sets `Source: SourceDevPod` for these. TUI shows them as read-only. They stay in the main file, where sshm never edits them.
 
 ## Module breakdown
 
@@ -101,9 +97,12 @@ Why `Source` field:
 
 ```
 config/
-  parser.go      Parse(raw []byte) (*ConfigFile, error)
-  writer.go      Write(cfg *ConfigFile) ([]byte, error)
-  backup.go      Backup(path string) error    // copies to .bak with timestamp
+  parser.go      Parse(raw []byte) (*ConfigFile, error)   // read-only view of one file
+  load.go        Load(main string) (*Loaded, error)       // main file + everything it Includes
+  doc.go         Doc: line-based editor of the managed file (SetOption, AppendBlock, DisableBlocks, ...)
+  doc_raw.go     BlockLines, AppendRaw, RemoveSpans: raw line edits (init's Host *, import)
+  writer.go      the canonical text of one new host block (used by Doc.AppendBlock and BlockLines)
+  backup.go      BackupTo(path, dir) (string, error)      // timestamped copy in sshm-backups/
   atomic.go      AtomicWrite(path string, data []byte) error
   locate.go      FindConfig() (string, error) // $SSH_AUTH_CONFIG or ~/.ssh/config
 ```
@@ -120,24 +119,25 @@ IDLE ──────"Host X"──────► IN_HOST
   │◄────blank/comment────────┘
 ```
 
-- `IDLE`: accumulate comments/blank lines into CommentBlock.
+- `IDLE`: skip comments and blank lines.
 - `IN_HOST`: accumulate key-value pairs into current Host.
-- Comments inside a host block (between key-value lines) attach to that host as `InlineComments`.
-- `Host *` (wildcard) is parsed as a normal Host with `Name: "*"`. It is not special-cased when resolving effective config: like every block it applies in file order, and since ssh is first-wins it only supplies true defaults when placed *after* the specific blocks. (`sshm init` therefore appends a new `Host *` as the last host block; an existing one is updated in place and, if other hosts follow it, `init` prints a note that its values override theirs.)
+- Comments inside a host block (between key-value lines) are skipped; they stay in the file.
+- `Host *` (wildcard) is parsed as a normal Host with `Name: "*"`. It is not special-cased when resolving effective config: like every block it applies in file order, and since ssh is first-wins it only supplies true defaults when placed *after* the specific blocks. (`sshm init` therefore appends a new `Host *` as the last host block of the main file; an existing one is never rewritten and `init` prints a note saying where it is.)
 
-Key normalization on parse: `user`, `User`, `USER` all become the canonical form for the struct field, but the writer stores the original casing to preserve round-trip fidelity. Actually — simpler: store canonical, write canonical. The `sshm validate` command flags mixed-case as info, and `sshm normalize` (or save in TUI) rewrites to canonical `HostName`, `User`, `Port`, etc. This is a one-time cleanup, not per-save.
+`sshm validate` flags mixed-case option names as info. sshm does not normalize the casing or formatting of existing lines.
 
-**Writer design:**
+**Editing design (no re-serialization):**
 
-Not a full re-serialize. The writer operates in two modes:
+sshm never builds a file from parsed hosts. Every write is an edit of lines of ONE file, the managed file `config.d/sshm.conf` that the main file includes (one `Include` line, set up by `sshm setup`, or by `sshm init` on a machine without an ssh config). `config.Doc` holds the file as its lines and changes only what an operation names: set or unset an option line, append a new block (canonical format, 2-space indent, `HostName` not `Hostname`), delete or duplicate one block, comment a group's blocks out between markers. Everything else is byte-for-byte what was read. The main file is only ever touched by the Include line `setup` inserts, the `Host *` block `init` appends, and the blocks `import` removes.
 
-1. **Full write** (after `sshm init` or bulk operations): serialize all hosts + comments from scratch. Canonical formatting: 2-space indent, `HostName` not `Hostname`.
-2. **Surgical write** (after editing a single host in TUI): replace lines `LineStart..LineEnd` of that host with the new serialized block. Everything else is byte-for-byte from `Raw`. This is the key to preserving DevPod blocks and hand-edited comments.
+Every command that writes an ssh config first checks that the config is set up (`ErrNotSetUp` otherwise, before any argument check and without touching a file). A host that is not defined in the managed file (the main file, an included file) or whose `Host` line has several patterns is refused with a message saying why.
+
+**Save pipeline** (`saveManagedDoc`, also used for `init` and, in its own form, `setup` and `import`): lock, check that the file is still what the edit started from, ask `ssh -G` for every host (and the sentinel name) before, back up the file into `sshm-backups/`, write atomically, ask `ssh -G` again and compare under the edit's plan, restore the old bytes if anything differs or ssh fails. SIGINT, SIGTERM and SIGHUP are handled only between the first write and the end of this verification: the same restore runs and the command exits with `interrupted: <file> restored`. A process killed with SIGKILL in that window leaves the file as written; the next save refuses ("already broken") and names the newest backup.
 
 **Atomic write:**
 - Write to temp file in same directory (`~/.ssh/.config.tmp.XXXX`).
 - `fsync` the temp file.
-- `rename` temp over `~/.ssh/config`.
+- `rename` temp over the file.
 - This prevents corruption if the process is killed mid-write.
 
 ### internal/domain — Pure logic, no I/O
@@ -274,7 +274,7 @@ No state held between operations. Each method reads config fresh from disk, does
 - No stale cache problem — file is always read on every operation.
 - No sync issues if you hand-edit the file while TUI is open. TUI reloads on focus (or on explicit refresh key).
 
-The TUI holds an in-memory `ConfigFile` for display, but on save it calls `app.EditHost()` which re-reads, applies the surgical write, and returns. The TUI then reloads.
+The TUI holds an in-memory `Snapshot` for display, but on save it calls `app.EditHost()` which re-reads, edits the managed file's lines, verifies and returns. The TUI then reloads. On a config that is not set up the TUI's editing keys only show a notice (`app.CheckEdit` returns `ErrNotSetUp`).
 
 ### internal/cli — Cobra commands
 
@@ -404,7 +404,7 @@ disk ~/.ssh/config
 config.Parse(raw []byte)
   │
   ▼
-*config.ConfigFile { Hosts: []Host, Comments: ...}
+*config.ConfigFile { Hosts: []Host, ... }   (config.Load: the main file plus its Includes)
   │
   ▼
 domain.GroupHosts(hosts) → map[string][]Host   (for list/groups)
@@ -423,20 +423,21 @@ User action (CLI flags or TUI form)
   ▼
 app.EditHost(name, changes)
   │
-  ├─► config.Parse(current file)     // re-read fresh
+  ├─► gate: the main file includes the managed file, else ErrNotSetUp
   │
-  ├─► domain: find host, apply changes
+  ├─► config.Load(main)               // re-read fresh, with Includes
+  │     └─► host must be a single-pattern block of the managed file
+  │         (else *UnmanagedHostError / *MultiPatternError)
   │
-  ├─► domain.Validate(changed host) → []Issue
-  │     └─► if errors: abort, return issues
+  ├─► config.ParseDoc(managed file) → Doc.SetOption / AppendBlock / ...
+  │     └─► only the lines the edit names change
   │
-  ├─► config.Backup(configPath)       // ~/.ssh/config.bak.TIMESTAMP
-  │
-  ├─► config.Write(updated ConfigFile) → []byte
-  │     └─► surgical: replace only changed host's lines
-  │
-  └─► config.AtomicWrite(configPath, data)
-        └─► write temp → fsync → rename
+  └─► saveManagedDoc(managed, doc, plan)
+        ├─► lock, ssh -G of every host before
+        ├─► BackupTo(managed, <ssh dir>/sshm-backups)
+        ├─► AtomicWrite: write temp → fsync → rename
+        └─► ssh -G after, compare under plan; restore the old bytes on any
+            difference, ssh error or SIGINT/SIGTERM/SIGHUP
 ```
 
 ### Connect flow
@@ -462,15 +463,23 @@ app.ListHosts("") → find "host-acq-dev"
 - If you delete the tool, your config is intact and usable.
 - No risk of desynchronized state.
 
-### 2. Surgical writes, not full re-serialize
+### 2. Line edits of one managed file, never a re-serialization
 
-Editing one host in the TUI should not reformat the entire file. The writer replaces only the lines belonging to the edited host. This preserves:
-- DevPod blocks (never touched)
+Editing one host should not reformat anything else. sshm changes only the lines an operation names, in its own file `config.d/sshm.conf`, which the main file includes. This preserves:
+- DevPod blocks and everything else in your own file (never touched)
 - Your hand-written comments
 - Your preferred ordering
 - Inline comments you added
 
-Full re-serialize happens only for explicit operations: `sshm init` (generates `Host *` block), `sshm normalize` (fixes casing/formatting — optional future command).
+The one append to your own file is the `Host *` block of `sshm init`; `sshm setup` adds the one `Include` line and `sshm import` removes the blocks it moves.
+
+#### Known limits
+
+- A `Host` line with several patterns (`Host db-1 db-2`) cannot be edited; the refusal says why.
+- DevPod and `Match` blocks stay in the main file; sshm never edits them.
+- Clients that do not follow `Include` (for example libraries that parse `~/.ssh/config` themselves) do not see the managed hosts.
+- A dotfile manager that overwrites the main file drops the `Include` line; writes then fail with `ErrNotSetUp` until `sshm setup` is run again.
+- SIGKILL during a save can leave the file as written; the next save refuses and names the newest backup.
 
 ### 3. Domain layer is pure
 
@@ -482,7 +491,7 @@ No in-memory cache in the app layer. Each method reads the file, does its work, 
 
 ### 5. `Extra` map for unknown options
 
-SSH has 100+ config options. We model ~12 as first-class fields. The rest go in `Extra map[string]string`. The writer outputs them. This means:
+SSH has 100+ config options. We model ~12 as first-class fields. The rest go in `Extra map[string]string`. A new block writes them verbatim. This means:
 - Any SSH option works, even ones we've never seen.
 - No need to update the tool when OpenSSH adds new options.
 - TUI shows known fields in the edit form; Extra options shown in a "raw options" section.
@@ -528,13 +537,12 @@ testdata/
   mixed_case.config
   ...
 
-TestParseAndWrite:
+TestParse:
   for each testdata file:
-    parse -> write -> compare to expected
+    parse -> compare hosts to expected
 
-TestRoundTrip:
-  parse -> write -> parse again -> compare structs
-  (should be identical)
+TestDoc (unit and property tests):
+  edit a Doc -> bytes outside the edit unchanged, Doc and Parse agree on the hosts
 ```
 
 ### Integration tests

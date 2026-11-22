@@ -125,8 +125,8 @@ func argText(line string) string {
 }
 
 // planImport reads the files and classifies the blocks of the main file (I3).
-// ErrNotSetUp in legacy mode; refuses a configuration with an Include sshm
-// cannot follow (I1).
+// ErrNotSetUp when the config is not set up; refuses a configuration with an
+// Include sshm cannot follow (I1).
 func (a *App) planImport() (*importPlan, error) {
 	v, err := a.activeView()
 	if err != nil {
@@ -261,8 +261,8 @@ func (a *App) planImport() (*importPlan, error) {
 
 // Import moves the plain single-name Host blocks (and marker-disabled blocks)
 // of the main file into the managed file (I1-I12). It plans only unless
-// opts.Apply is set. Returns ErrNotSetUp in legacy mode, ErrConflict (I12) when
-// a file changed between planning and the write.
+// opts.Apply is set. Returns ErrNotSetUp when the config is not set up,
+// ErrConflict (I12) when a file changed between planning and the write.
 func (a *App) Import(opts ImportOptions) (ImportResult, error) {
 	p, err := a.planImport()
 	if err != nil {
@@ -295,7 +295,7 @@ func (a *App) Import(opts ImportOptions) (ImportResult, error) {
 }
 
 // applyImport writes the plan (I4, I10-I12) and verifies it (I5).
-func (a *App) applyImport(p *importPlan, opts ImportOptions, verify bool, res *ImportResult) error {
+func (a *App) applyImport(p *importPlan, opts ImportOptions, verify bool, res *ImportResult) (err error) {
 	main, managed := a.configPath, a.ManagedPath()
 
 	// Lock both files, always in the same order. Two paths in one directory
@@ -348,7 +348,11 @@ func (a *App) applyImport(p *importPlan, opts ImportOptions, verify bool, res *I
 			return fmt.Errorf("not importing: %w", err)
 		}
 		if before, err = a.resolveAll(names); err != nil {
-			return fmt.Errorf("not importing: the current ssh configuration is already broken: %w", err)
+			hint := a.backupHint(main)
+			if hint == "" {
+				hint = a.backupHint(managed)
+			}
+			return fmt.Errorf("not importing: the current ssh configuration is already broken: %w%s", err, hint)
 		}
 		if err := unchanged(); err != nil {
 			return err
@@ -399,6 +403,10 @@ func (a *App) applyImport(p *importPlan, opts ImportOptions, verify bool, res *I
 	restoreManaged := func() error {
 		return restoreFile(kindManaged, managed, managedData, p.managedRaw, true, managedMode)
 	}
+	// From the first write to the end of the verification a signal restores
+	// both files like a failed verification (interrupt.go).
+	w := a.openInterruptWindow()
+	defer func() { a.closeInterruptWindow(w, err) }()
 	if err := config.AtomicWriteMode(managed, managedData, 0o600); err != nil {
 		if rerr := restoreManaged(); rerr != nil {
 			return fmt.Errorf("write %s: %w (AND restoring it failed: %v)", managed, err, rerr)
@@ -414,10 +422,17 @@ func (a *App) applyImport(p *importPlan, opts ImportOptions, verify bool, res *I
 	restoreBoth := func(cause error) error {
 		merr := restoreFile(kindMain, main, mainData, p.mainRaw, true, 0)
 		gerr := restoreManaged()
+		if w.fired() {
+			return a.interrupted(w, main, errors.Join(merr, gerr))
+		}
 		if merr != nil || gerr != nil {
 			return fmt.Errorf("%w (AND the rollback failed: %v; backups are in %s)", cause, errors.Join(merr, gerr), a.managedBackupDir())
 		}
 		return cause
+	}
+
+	if w.fired() {
+		return restoreBoth(ErrInterrupted)
 	}
 
 	// What ssh sees now.
@@ -445,6 +460,10 @@ func (a *App) applyImport(p *importPlan, opts ImportOptions, verify bool, res *I
 		} else {
 			res.Equivalent = true
 		}
+	}
+	if w.fired() {
+		res.Applied, res.Equivalent = false, false
+		return restoreBoth(ErrInterrupted)
 	}
 	res.Applied = true
 	return a.migrateGroupState(p, res)

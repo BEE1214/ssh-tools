@@ -1,7 +1,6 @@
 package config
 
 import (
-	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -109,63 +108,64 @@ func TestParse_HostLineVariants(t *testing.T) {
 	}
 }
 
-// An explicit "Port 22" must survive Parse -> Write: dropping it would make
-// the host fall through to a later "Host * / Port 2200".
-func TestWrite_Port22RoundTrips(t *testing.T) {
+// blockText renders h with BlockLines, the canonical block of a new host.
+func blockText(t *testing.T, h domain.Host) string {
+	t.Helper()
+	lines, err := BlockLines(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+// An explicit "Port 22" must be written: dropping it would make the host fall
+// through to a later "Host * / Port 2200".
+func TestBlockLines_Port22IsWritten(t *testing.T) {
 	in := "Host web\n  HostName 10.0.0.1\n  Port 22\n"
 	cfg, err := Parse([]byte(in))
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := Write(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(out) != in {
-		t.Errorf("Write changed the block:\n got %q\nwant %q", out, in)
+	if got := blockText(t, cfg.Hosts[0]); got != in {
+		t.Errorf("BlockLines changed the block:\n got %q\nwant %q", got, in)
 	}
 }
 
-func TestWrite_EmitsAllIdentityAndCertificateFiles(t *testing.T) {
+func TestBlockLines_EmitsAllIdentityAndCertificateFiles(t *testing.T) {
 	in := "Host web\n  IdentityFile ~/.ssh/a\n  IdentityFile ~/.ssh/b\n  CertificateFile ~/.ssh/a-cert.pub\n  CertificateFile ~/.ssh/b-cert.pub\n"
 	cfg, err := Parse([]byte(in))
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := Write(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(out) != in {
-		t.Errorf("Write lost repeated lines:\n got %q\nwant %q", out, in)
+	if got := blockText(t, cfg.Hosts[0]); got != in {
+		t.Errorf("BlockLines lost repeated lines:\n got %q\nwant %q", got, in)
 	}
 }
 
 // Consumers that only know the singular fields keep working: the singular
 // value replaces the first list entry, an empty singular value clears
 // nothing by itself (callers clear the list too, see app.applyChange).
-func TestWrite_SingularFieldOverridesFirstListEntry(t *testing.T) {
+func TestBlockLines_SingularFieldOverridesFirstListEntry(t *testing.T) {
 	cfg, err := Parse([]byte("Host web\n  IdentityFile ~/.ssh/a\n  IdentityFile ~/.ssh/b\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg.Hosts[0].IdentityFile = "~/.ssh/new"
-	out, _ := Write(cfg)
-	if want := "Host web\n  IdentityFile ~/.ssh/new\n  IdentityFile ~/.ssh/b\n"; string(out) != want {
-		t.Errorf("got %q, want %q", out, want)
+	if got, want := blockText(t, cfg.Hosts[0]), "Host web\n  IdentityFile ~/.ssh/new\n  IdentityFile ~/.ssh/b\n"; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 
 	// Host built without lists (init, tests): singular field only.
-	out, _ = Write(&ConfigFile{Hosts: []domain.Host{{Name: "h", IdentityFile: "~/.ssh/k", CertificateFile: "~/.ssh/k-cert.pub"}}})
-	if want := "Host h\n  IdentityFile ~/.ssh/k\n  CertificateFile ~/.ssh/k-cert.pub\n"; string(out) != want {
-		t.Errorf("got %q, want %q", out, want)
+	got := blockText(t, domain.Host{Name: "h", IdentityFile: "~/.ssh/k", CertificateFile: "~/.ssh/k-cert.pub"})
+	if want := "Host h\n  IdentityFile ~/.ssh/k\n  CertificateFile ~/.ssh/k-cert.pub\n"; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
-func TestWrite_RefusesLineBreakInListValues(t *testing.T) {
-	_, err := Write(&ConfigFile{Hosts: []domain.Host{{Name: "h", IdentityFiles: []string{"a", "b\nProxyCommand evil"}}}})
+func TestBlockLines_RefusesLineBreakInListValues(t *testing.T) {
+	_, err := BlockLines(domain.Host{Name: "h", IdentityFiles: []string{"a", "b\nProxyCommand evil"}})
 	if err == nil {
-		t.Fatal("Write accepted a line break in IdentityFiles")
+		t.Fatal("BlockLines accepted a line break in IdentityFiles")
 	}
 }
 
@@ -215,24 +215,5 @@ Host *
 	assertSetEqual(t, "certificatefile", mine.CertificateFiles, ssh["certificatefile"])
 	if len(mine.IdentityFiles) != 3 {
 		t.Errorf("IdentityFiles = %v, want 3 accumulated values", mine.IdentityFiles)
-	}
-
-	// Parse -> Write -> ssh must resolve identically (Port 22 and the
-	// repeated lines survive the legacy serializer).
-	raw, err := os.ReadFile(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Parse(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, err := Write(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rt := write(t, filepath.Join(dir, "roundtrip"), string(out))
-	if got, want := sshG(t, rt, "rep"), ssh; !reflect.DeepEqual(got, want) {
-		t.Errorf("Write changed ssh -G output:\n got %v\nwant %v", got, want)
 	}
 }

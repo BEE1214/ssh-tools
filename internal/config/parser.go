@@ -10,13 +10,11 @@ import (
 
 // ConfigFile is the parsed representation of the entire SSH config file.
 type ConfigFile struct {
-	Hosts    []domain.Host
-	Comments []CommentBlock // standalone comments/blank lines preserved between hosts
-	Raw      []byte         // original file bytes
+	Hosts []domain.Host
+	Raw   []byte // original file bytes
 
 	// Includes lists the Include directives found in the file, in line
-	// order. Read-only metadata for Load: Write ignores it (Include lines
-	// are still preserved as ordinary comment/option text).
+	// order. Read-only metadata for Load.
 	Includes []IncludeDirective
 }
 
@@ -31,20 +29,14 @@ func (c *ConfigFile) RawTextLines() []string {
 	return strings.Split(text, "\n")
 }
 
-// CommentBlock preserves comments and blank lines between host blocks.
-type CommentBlock struct {
-	LineStart int
-	LineEnd   int
-	Text      string
-}
-
-// Parse reads raw SSH config bytes and returns a structured ConfigFile.
+// Parse reads raw SSH config bytes and returns a structured ConfigFile. It is
+// read-only: the file is never re-serialized from it (edits go through Doc).
 //
 // The parser is a line-by-line state machine with two states:
-//   - IDLE: accumulate comments/blank lines into CommentBlock.
+//   - IDLE: skip comments and blank lines.
 //   - IN_HOST: accumulate key-value pairs into current Host.
 //
-// It preserves comments, blank lines, and detects DevPod blocks.
+// It detects DevPod blocks and disabled groups.
 func Parse(raw []byte) (*ConfigFile, error) {
 	cfg := &ConfigFile{Raw: raw}
 
@@ -53,7 +45,6 @@ func Parse(raw []byte) (*ConfigFile, error) {
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
 	var currentHost *domain.Host
-	var commentLines []string
 	var pendingDevPod string
 	var pendingGroup string
 	var inDisabledBlock bool
@@ -63,30 +54,7 @@ func Parse(raw []byte) (*ConfigFile, error) {
 	// inConditionalBlock: the nearest enabled Host/Match line above the
 	// current line does not match every host (see matchesEveryHost).
 	var inConditionalBlock bool
-	commentStart := 0
 	lineNum := 0
-
-	// flushComment saves accumulated comment lines as a CommentBlock.
-	// Trailing blank lines are trimmed: the writer adds a blank line after
-	// each comment block, so keeping trailing blanks would grow the block
-	// by one line on every parse→write cycle.
-	flushComment := func() {
-		if len(commentLines) == 0 {
-			return
-		}
-		for len(commentLines) > 0 && strings.TrimSpace(commentLines[len(commentLines)-1]) == "" {
-			commentLines = commentLines[:len(commentLines)-1]
-		}
-		if len(commentLines) == 0 {
-			return
-		}
-		cfg.Comments = append(cfg.Comments, CommentBlock{
-			LineStart: commentStart,
-			LineEnd:   lineNum,
-			Text:      strings.Join(commentLines, "\n"),
-		})
-		commentLines = nil
-	}
 
 	// flushHost saves the current host block.
 	flushHost := func() {
@@ -152,11 +120,9 @@ func Parse(raw []byte) (*ConfigFile, error) {
 					flushHost()
 					resumeHost = len(cfg.Hosts) - 1
 				}
-				flushComment()
 				disabledGroup = name
 				disabledStart = lineNum
 				inDisabledBlock = true
-				commentLines = nil
 				continue
 			}
 		}
@@ -165,16 +131,14 @@ func Parse(raw []byte) (*ConfigFile, error) {
 			inDisabledBlock = false
 			disabledGroup = ""
 			disabledRaw = nil
-			commentLines = nil
 			continue
 		}
 
 		// Explicit group comment: "# group: <name>" applies to the next
-		// Host line and is consumed (not treated as a comment block).
+		// Host line and is consumed.
 		// Inside a host block it stays an ordinary comment.
 		if !inDisabledBlock && currentHost == nil {
 			if g, ok := domain.GroupFromComment(trimmed); ok {
-				flushComment()
 				pendingGroup = g
 				continue
 			}
@@ -182,7 +146,6 @@ func Parse(raw []byte) (*ConfigFile, error) {
 
 		// DevPod block detection: "# DevPod Start <name>"
 		if strings.HasPrefix(trimmed, "# DevPod Start ") {
-			flushComment()
 			flushHost()
 			resumeHost = -1
 
@@ -197,8 +160,6 @@ func Parse(raw []byte) (*ConfigFile, error) {
 			flushHost()
 			resumeHost = -1
 			pendingDevPod = ""
-			// Don't treat the End marker as a comment block — it's part of the DevPod section.
-			commentLines = nil
 			continue
 		}
 
@@ -210,8 +171,7 @@ func Parse(raw []byte) (*ConfigFile, error) {
 		}
 
 		// Include directive: recorded for Load, then handled like any other
-		// line below (outside a block it is kept as comment text, inside a
-		// block it is an unmodeled option) so Write output is unchanged.
+		// line below (inside a block it is an unmodeled option).
 		// Lines inside disabled-group markers never reach this point.
 		if pats, ok := parseIncludeLine(trimmed); ok {
 			cfg.Includes = append(cfg.Includes, IncludeDirective{Line: lineNum, Patterns: pats, Conditional: inConditionalBlock})
@@ -230,16 +190,19 @@ func Parse(raw []byte) (*ConfigFile, error) {
 
 		// Host line: starts a new host block
 		if isHost {
-			flushComment()
 			flushHost()
 
-			// Name is the argument text as written: the legacy Write puts it
-			// back byte-for-byte, so quotes, escapes and an inline comment
-			// survive a Parse→Write cycle. Patterns is what ssh makes of it
-			// (SplitWords); always non-nil here, see domain.Host.Patterns.
+			// Name is what a user types for the block (P7 N1): the patterns
+			// ssh makes of the argument text (SplitWords: quotes removed,
+			// comment dropped) joined by one space. A line without any
+			// pattern keeps its argument text. Patterns is what ssh makes of
+			// it; always non-nil here, see domain.Host.Patterns.
 			name := hostLineName(trimmed)
 			if names == nil {
 				names = []string{}
+			}
+			if joined := strings.Join(names, " "); joined != "" {
+				name = joined // not for `Host # c` and `Host ""`: no pattern to type
 			}
 			currentHost = &domain.Host{
 				Name:     name,
@@ -267,27 +230,17 @@ func Parse(raw []byte) (*ConfigFile, error) {
 				if trimmed == "" {
 					resumeHost = -1 // a blank line ends a block for this parser
 				}
-				if len(commentLines) == 0 {
-					commentStart = lineNum
-				}
-				commentLines = append(commentLines, raw)
 				continue
 			}
 			// An option line right below a disabled region that interrupted a
 			// host block: it is still an option of that block (see resumeHost).
-			// Treating it as a stray line would move it into Comments, and
-			// Write would emit it at the top of the file as a GLOBAL option.
 			if resumeHost >= 0 {
 				_ = parseKeyValue(&cfg.Hosts[resumeHost], trimmed)
 				cfg.Hosts[resumeHost].LineEnd = lineNum
 				continue
 			}
-			// Non-empty, non-comment, non-Host line outside a block.
-			// Could be a stray option or a "Match" block. Treat as comment to preserve it.
-			if len(commentLines) == 0 {
-				commentStart = lineNum
-			}
-			commentLines = append(commentLines, raw)
+			// Non-empty, non-comment, non-Host line outside a block: a stray
+			// option or a "Match" block. sshm does not model it.
 			continue
 		}
 
@@ -299,8 +252,6 @@ func Parse(raw []byte) (*ConfigFile, error) {
 				currentHost.LineEnd = currentHost.LineStart
 			}
 			flushHost()
-			commentStart = lineNum
-			commentLines = append(commentLines, raw)
 			continue
 		}
 
@@ -318,7 +269,6 @@ func Parse(raw []byte) (*ConfigFile, error) {
 		}
 	}
 
-	flushComment()
 	flushHost()
 
 	// An unterminated disabled block would swallow every following host and
@@ -395,9 +345,10 @@ func splitKeyword(line string) (key, value string, ok bool) {
 // hostLineName returns the argument text of a (trimmed) Host line: what
 // follows the keyword and its separator (blanks and at most one "=", which
 // ssh skips the same way), with trailing blanks removed and nothing else
-// touched (`Host "a b" # c` gives `"a b" # c`). For an ordinary "Host text"
-// line this is exactly what the parser stored in Host.Name before P2b. Write
-// emits "Host " + Name, which ssh reads exactly like the original line.
+// touched (`Host "a b" # c` gives `"a b" # c`). It is the host's Name ONLY
+// for a line without any pattern (`Host # c`, `Host ""`); otherwise Name is
+// the patterns joined by one space (see Parse), which differs from this text
+// as soon as there is a quote, a comment or extra blanks.
 func hostLineName(trimmed string) string {
 	_, value, _ := splitKeyword(trimmed)
 	return value
@@ -454,8 +405,8 @@ func parseKeyValue(h *domain.Host, line string) error {
 		// two settings. After "ForwardAgent yes" a later "ForwardAgent
 		// <path>" still sets the path, and the two lines together are what
 		// "ForwardAgent <path>" alone is; so the path is the value to keep
-		// (the legacy writer has one line per option). In every other
-		// order ssh keeps the first line.
+		// (Host has one value per option). In every other order ssh keeps
+		// the first line.
 		if isFlag, on := agentFlag(h.ForwardAgent); isFlag && on {
 			if later, _ := agentFlag(value); !later {
 				h.ForwardAgent = value
@@ -509,8 +460,8 @@ func parseKeyValue(h *domain.Host, line string) error {
 
 // agentFlag reports whether a ForwardAgent value is one of ssh's flag words
 // (yes, no, true, false; any case) rather than an agent socket path, and
-// whether it switches forwarding on. Only the first word counts: the legacy
-// parser keeps a trailing "# comment" in the value.
+// whether it switches forwarding on. Only the first word counts: the parser
+// keeps a trailing "# comment" in the value.
 func agentFlag(value string) (isFlag, on bool) {
 	words := SplitWords(value)
 	if len(words) == 0 {
@@ -603,38 +554,26 @@ func canonicalKey(key string) string {
 //
 // Lines between markers are stored in the config COMMENTED OUT (each line
 // prefixed with "# ", blank lines untouched) so raw ssh cannot resolve the
-// hosts. This function strips one comment level, sub-parses the original
-// blocks, and stores the uncommented text in RawBlock — the writer
-// re-comments it on write and enable restores it verbatim.
+// hosts. This function strips one comment level and sub-parses the original
+// blocks (Doc enables a group by stripping the comment level again).
 //
 // Disabled hosts get negative line numbers (unmoored from source
 // coordinates) and Group = <disabled group>.
 //
 // Note: the sub-parse consumes any "# group:" comments inside the block as
-// pending-group state; the marker group overrides it. Host blocks themselves
-// are restored byte-for-byte via RawBlock.
+// pending-group state; the marker group overrides it.
 func appendDisabledHosts(cfg *ConfigFile, group string, rawLines []string) {
 	inner := uncommentLines(rawLines)
 	sub, err := Parse([]byte(strings.Join(inner, "\n")))
 	if err != nil || len(sub.Hosts) == 0 {
-		// No parseable host blocks — preserve the bytes as fully commented
-		// text so nothing is silently dropped. (Parse is non-fatal by
-		// design, so this is a defensive fallback only.)
-		cfg.Comments = append(cfg.Comments, CommentBlock{
-			LineStart: 0,
-			LineEnd:   0,
-			Text:      DisabledBlockText(group, rawLines),
-		})
-		return
+		return // no parseable host blocks (Parse is non-fatal by design)
 	}
-	spans := disabledBlockSpans(sub, len(inner))
 	for i := range sub.Hosts {
 		h := sub.Hosts[i]
 		h.Disabled = true
 		h.Group = group
 		h.LineStart = -(1000000 + len(cfg.Hosts))
 		h.LineEnd = 0
-		h.RawBlock = strings.Join(inner[spans[i][0]-1:spans[i][1]], "\n")
 		cfg.Hosts = append(cfg.Hosts, h)
 	}
 }
@@ -672,52 +611,4 @@ func uncommentLines(lines []string) []string {
 		out[i] = l
 	}
 	return out
-}
-
-// disabledBlockSpans computes, for each host of a parsed disabled
-// sub-config, the verbatim line span it owns within rawLines (1-indexed,
-// inclusive). Spans are contiguous: span[0] of the first host is line 1 and
-// each next span starts right after the previous one, so comments and blank
-// lines inside the disabled section are preserved (attached to the
-// preceding or following host) and nothing is dropped or duplicated.
-func disabledBlockSpans(sub *ConfigFile, rawCount int) [][2]int {
-	spans := make([][2]int, len(sub.Hosts))
-	for i := range sub.Hosts {
-		start := 1
-		if i > 0 {
-			start = spans[i-1][1] + 1
-		}
-		end := rawCount
-		if j := i + 1; j < len(sub.Hosts) {
-			if nextStart := sub.Hosts[j].LineStart - 1; nextStart >= start && nextStart < end {
-				end = nextStart
-			}
-		}
-		if end < start {
-			end = start
-		}
-		spans[i] = [2]int{start, end}
-	}
-	return spans
-}
-
-// DisabledBlockText renders leftover disabled-block lines as a fully
-// commented-out text block between the group's markers (defensive fallback
-// that keeps the bytes visible in the config file).
-func DisabledBlockText(group string, rawLines []string) string {
-	var b strings.Builder
-	b.WriteString(domain.DisabledMarkerStart(group))
-	b.WriteString("\n")
-	for _, l := range rawLines {
-		if strings.TrimSpace(l) == "" {
-			b.WriteString("#\n")
-		} else {
-			b.WriteString("# ")
-			b.WriteString(l)
-			b.WriteString("\n")
-		}
-	}
-	b.WriteString(domain.DisabledMarkerEnd(group))
-	b.WriteString("\n")
-	return b.String()
 }
